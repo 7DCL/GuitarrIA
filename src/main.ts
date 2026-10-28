@@ -320,7 +320,7 @@ requestAnimationFrame(frame);
 $('expTxt').addEventListener('click', () => {
   const tuning = currentTuning();
   const capo = Number(capoInput.value) || 0;
-  const header = `${state.name}\nAfinación: ${TUNINGS[tuningSel.value].label}${capo ? ` · Capo ${capo}` : ''}\nGenerado con Guitarra IA\n\n`;
+  const header = `${state.name}\nAfinación: ${TUNINGS[tuningSel.value].label}${capo ? ` · Capo ${capo}` : ''}\nGenerado con GuitarrIA\n\n`;
   download(`${state.name}.txt`, header + toAsciiTab(state.events, tuning), 'text/plain');
 });
 $('expMid').addEventListener('click', () => {

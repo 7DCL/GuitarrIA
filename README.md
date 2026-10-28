@@ -1,4 +1,4 @@
-# 🎸 Guitarra IA
+# 🎸 GuitarrIA
 
 Convierte cualquier grabación de guitarra en **tablatura tocable** con IA, la muestra en un
 **diapasón animado** y te deja practicarla lento y en bucle. Inspirado en deepfret.com, pero
