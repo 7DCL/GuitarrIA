@@ -1,4 +1,5 @@
 import { Midi } from '@tonejs/midi';
+import { cleanNotes, type Mode } from './cleanup';
 import { assignFingering, type Event, type Note } from './fingering';
 import { drawFretboard } from './fretboard';
 import { detectPitch } from './pitch';
@@ -19,6 +20,7 @@ const tabEl = $('tab');
 const tuningSel = $<HTMLSelectElement>('tuning');
 const capoInput = $<HTMLInputElement>('capo');
 const sensInput = $<HTMLInputElement>('sens');
+const modeSel = $<HTMLSelectElement>('mode');
 const namesInput = $<HTMLInputElement>('names');
 
 const state = {
@@ -221,9 +223,15 @@ async function loadBlob(blob: Blob, name: string, source?: YouTubePlayer, offset
 function refreshNotes() {
   if (!state.raw) return;
   const sens = Number(sensInput.value);
-  state.notes = extractNotes(state.raw, { onsetThreshold: 1 - sens, frameThreshold: 0.45 - sens * 0.3 })
+  const mode = modeSel.value as Mode;
+  const notes = extractNotes(state.raw, {
+    onsetThreshold: 1 - sens,
+    frameThreshold: 0.45 - sens * 0.3,
+    melodiaTrick: mode === 'chords',
+  })
     .map((n) => ({ ...n, start: n.start - state.offset }))
     .filter((n) => n.start >= 0);
+  state.notes = cleanNotes(notes, { mode });
   refreshFingering();
 }
 
@@ -276,6 +284,7 @@ tabEl.addEventListener('click', (e) => {
 tuningSel.addEventListener('change', refreshFingering);
 capoInput.addEventListener('input', refreshFingering);
 sensInput.addEventListener('change', refreshNotes);
+modeSel.addEventListener('change', refreshNotes);
 
 // ---------- Reproductor ----------
 const playBtn = $('play');

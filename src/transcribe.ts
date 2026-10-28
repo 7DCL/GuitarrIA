@@ -11,6 +11,7 @@ export interface TranscribeOptions {
   minNoteMs?: number;
   minMidi?: number;
   maxMidi?: number;
+  melodiaTrick?: boolean; // añade notas sin ataque claro; útil en acordes, mete ruido en punteos
 }
 
 /** Mezcla a mono y remuestrea a 22.05 kHz, que es lo que espera el modelo. */
@@ -54,7 +55,17 @@ export function extractNotes(raw: RawOutput, opts: TranscribeOptions = {}): Note
   const events = noteFramesToTime(
     addPitchBendsToNoteEvents(
       raw.contours,
-      outputToNotesPoly(raw.frames, raw.onsets, opts.onsetThreshold ?? 0.5, opts.frameThreshold ?? 0.3, minFrames),
+      outputToNotesPoly(
+        raw.frames,
+        raw.onsets,
+        opts.onsetThreshold ?? 0.5,
+        opts.frameThreshold ?? 0.3,
+        minFrames,
+        true,
+        null,
+        null,
+        opts.melodiaTrick ?? true,
+      ),
     ),
   );
   const lo = opts.minMidi ?? 28;

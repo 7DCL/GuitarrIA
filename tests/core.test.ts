@@ -4,6 +4,7 @@ import { toAsciiTab } from '../src/tab';
 import { detectChord, TUNINGS } from '../src/theory';
 import { detectPitch } from '../src/pitch';
 import { parseYouTubeId } from '../src/player';
+import { cleanNotes } from '../src/cleanup';
 
 const std = TUNINGS.standard.strings;
 const note = (start: number, midi: number): Note => ({ start, duration: 0.4, midi, velocity: 0.8 });
@@ -92,5 +93,40 @@ describe('preferencias de digitación', () => {
   it('un arpegio de Em grave queda en posición abierta', () => {
     const evs = assignFingering([52, 55, 59, 64, 59, 55, 52].map((m, i) => note(1 + i * 0.5, m)), { tuning: std });
     expect(Math.max(...evs.map((e) => e.notes[0].fret))).toBeLessThanOrEqual(2);
+  });
+});
+
+describe('limpieza (modo punteo)', () => {
+  const n = (start: number, midi: number, velocity = 0.8, duration = 0.3): Note => ({ start, duration, midi, velocity });
+
+  it('quita armónicos de octava y quinta más débiles', () => {
+    const out = cleanNotes([n(0, 57), n(0.01, 69, 0.5), n(0.02, 76, 0.4)], { mode: 'lead' });
+    expect(out.map((x) => x.midi)).toEqual([57]);
+  });
+
+  it('deja una sola nota a la vez, la melodía (aguda)', () => {
+    const out = cleanNotes([n(0, 38, 0.9), n(0.02, 69, 0.7)], { mode: 'lead', minMidi: 28 });
+    expect(out.map((x) => x.midi)).toEqual([69]);
+  });
+
+  it('une re-ataques falsos de una nota sostenida', () => {
+    const out = cleanNotes([n(0, 64, 0.8, 0.3), n(0.31, 64, 0.5, 0.4)], { mode: 'lead' });
+    expect(out).toHaveLength(1);
+    expect(out[0].duration).toBeCloseTo(0.71, 2);
+  });
+
+  it('respeta notas repetidas tocadas de verdad', () => {
+    const out = cleanNotes([n(0, 64, 0.8, 0.2), n(0.4, 64, 0.8, 0.2)], { mode: 'lead' });
+    expect(out).toHaveLength(2);
+  });
+
+  it('descarta notas débiles y muy cortas', () => {
+    const out = cleanNotes([n(0, 64, 1), n(0.5, 66, 0.1), n(1, 67, 0.9, 0.02)], { mode: 'lead' });
+    expect(out.map((x) => x.midi)).toEqual([64]);
+  });
+
+  it('en modo acordes conserva las octavas', () => {
+    const out = cleanNotes([n(0, 40), n(0, 47), n(0, 52)], { mode: 'chords' });
+    expect(out).toHaveLength(3);
   });
 });

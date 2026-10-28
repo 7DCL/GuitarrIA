@@ -50,6 +50,12 @@
 
         <div id="workspace" hidden>
           <div class="settings">
+            <label>Tipo
+              <select id="mode">
+                <option value="lead" selected>Punteo / melodía (una nota)</option>
+                <option value="chords">Acordes / rasgueo</option>
+              </select>
+            </label>
             <label>Afinación <select id="tuning"></select></label>
             <label>Capo <input id="capo" type="number" min="0" max="12" value="0" /></label>
             <label>Sensibilidad <input id="sens" type="range" min="0.2" max="0.8" step="0.05" value="0.5" /></label>
