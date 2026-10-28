@@ -33,6 +33,9 @@ jobs:
           local/guitarria_local.py
       - name: Probar el .exe
         run: GUITARRIA_SELFTEST=1 ./dist/GuitarrIA-Local.exe
+      - name: Probar una descarga real de YouTube (informativo; YouTube a veces bloquea a GitHub)
+        continue-on-error: true
+        run: python -c "import sys; sys.path.insert(0, 'local'); import guitarria_local as g; p, t = g.download('https://www.youtube.com/watch?v=jNQXAC9IVRw'); print('OK', t, p.suffix, p.stat().st_size)"
       - name: Publicar
         env:
           GH_TOKEN: ${{ github.token }}
