@@ -1,0 +1,27 @@
+{
+  "name": "guitarra-ia",
+  "version": "1.0.0",
+  "description": "Transcribe guitarra a tablatura con IA, 100% en el navegador y gratis",
+  "scripts": {
+    "predev": "node scripts/copy-model.mjs",
+    "prebuild": "node scripts/copy-model.mjs",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vite": "^5.4.21",
+    "vitest": "^2.1.9"
+  },
+  "dependencies": {
+    "@spotify/basic-pitch": "^1.0.1",
+    "@tonejs/midi": "^2.0.28"
+  },
+  "type": "module",
+  "private": true
+}

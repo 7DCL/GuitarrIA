@@ -1,0 +1,5 @@
+node_modules
+dist
+public/model
+*.log
+.DS_Store
