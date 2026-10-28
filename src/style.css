@@ -123,3 +123,4 @@ input[type=range] { accent-color: var(--accent); }
 
 #view-transcribe { display: flex; flex-direction: column; }
 .drop.later { order: 10; margin-top: 16px; padding: 16px; }
+.local-tip { margin: 10px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--bg); font-size: 13px; }

@@ -4,3 +4,4 @@ public/model
 *.log
 .DS_Store
 eval/data
+.venv-local

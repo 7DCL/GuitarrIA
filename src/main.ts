@@ -3,6 +3,7 @@ import type { Mode } from './cleanup';
 import { assignFingering, type Event, type Note } from './fingering';
 import { drawFretboard } from './fretboard';
 import { detectPitch } from './pitch';
+import { downloadWithLocal, localAvailable, LOCAL_DOWNLOAD } from './local';
 import { AudioPlayer, YouTubePlayer, captureTabAudio, parseYouTubeId, type Player } from './player';
 import { pluck, renderDemo } from './synth';
 import { stringLabels, toAsciiTab } from './tab';
@@ -108,7 +109,8 @@ $('record').addEventListener('click', async (e) => {
 });
 
 // ---------- YouTube ----------
-// Sin servidor: el video se incrusta y GuitarrIA graba el audio de la pestaña mientras suena.
+// Dos caminos: si GuitarrIA Local está abierto en el PC, baja el audio y transcribe al instante;
+// si no, el video se incrusta y GuitarrIA graba el audio de la pestaña mientras suena.
 const ytStatus = $('ytStatus');
 const ytStart = $<HTMLButtonElement>('ytStart');
 const ytStop = $<HTMLButtonElement>('ytStop');
@@ -126,17 +128,47 @@ $('ytForm').addEventListener('submit', async (e) => {
   player.pause();
   $('workspace').hidden = true;
   $('ytPanel').hidden = false;
+  $('ytPanel').classList.add('compact');
+  $('ytCapture').hidden = true;
+  ytPlayer = null;
+  const [hasLocal, yt] = await Promise.all([
+    localAvailable(),
+    YouTubePlayer.create($('ytBox'), id).catch((err: Error) => err),
+  ]);
+  if (yt instanceof YouTubePlayer) {
+    ytPlayer = yt;
+    showPaused(yt);
+    yt.onEnded(() => capture && finishCapture(true));
+  }
+
+  // Con GuitarrIA Local abierto en el PC: se baja el audio y se transcribe sin reproducir nada.
+  if (hasLocal) {
+    const progress = $('progress');
+    progress.hidden = false;
+    progress.querySelector('div')!.style.width = '0%';
+    progress.querySelector('span')!.textContent = 'Descargando el audio con GuitarrIA Local…';
+    try {
+      const { blob, title } = await downloadWithLocal(id);
+      await loadBlob(blob, title, ytPlayer ?? undefined, 0);
+      return;
+    } catch (err) {
+      progress.hidden = true;
+      ytStatus.textContent = `GuitarrIA Local no pudo bajarlo: ${(err as Error).message}. Puedes transcribirlo escuchándolo:`;
+    }
+  } else ytStatus.textContent = '';
+
+  if (!(yt instanceof YouTubePlayer)) {
+    ytStatus.textContent = yt.message;
+    $('ytCapture').hidden = false;
+    ytStart.hidden = true;
+    return;
+  }
+  ytStart.hidden = false;
   $('ytPanel').classList.remove('compact');
   $('ytCapture').hidden = false;
-  ytStatus.textContent = 'Cargando video…';
-  try {
-    ytPlayer = await YouTubePlayer.create($('ytBox'), id);
-    showPaused(ytPlayer);
-    ytPlayer.onEnded(() => capture && finishCapture(true));
-    ytStatus.textContent = 'Listo. Dura ' + formatTime(ytPlayer.duration) + ': la transcripción tarda lo mismo que el video.';
-  } catch (err) {
-    ytStatus.textContent = (err as Error).message;
-  }
+  $<HTMLAnchorElement>('localLink').href = LOCAL_DOWNLOAD;
+  $('localTip').hidden = hasLocal;
+  if (!ytStatus.textContent) ytStatus.textContent = `Dura ${formatTime(yt.duration)}: escuchándolo, la transcripción tarda lo mismo que el video.`;
 });
 
 ytStart.addEventListener('click', async () => {

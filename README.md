@@ -13,6 +13,7 @@ Convierte cualquier grabación de guitarra en **tablatura tocable** con IA, la m
 - Tab interactiva: clic en una columna para saltar; nombres de acordes detectados.
 - Velocidad 25–100% sin cambiar el tono, bucle A-B y **práctica progresiva** (+5% por vuelta).
 - Escucha la transcripción con un sintetizador y compárala con el original.
+- Filtro de ruido y corrección automática de temas desafinados respecto a La 440.
 - Afinaciones (estándar, Drop D, Eb, DADGAD, Open G, bajo) y capo, sin volver a transcribir.
 - Afinador cromático por micrófono.
 - Exporta tab `.txt`, MIDI y proyecto `.json`.
@@ -25,12 +26,21 @@ Convierte cualquier grabación de guitarra en **tablatura tocable** con IA, la m
 ./scripts/yt-audio.sh "<url de YouTube>"   # baja el audio para subirlo (requiere yt-dlp)
 ```
 
-## Cómo funciona YouTube (gratis y sin servidor)
-El video se incrusta con el reproductor oficial y GuitarrIA graba el **audio de la propia pestaña**
-mientras suena (API `getDisplayMedia`), así que la transcripción tarda lo mismo que el video.
-Al pulsar *Transcribir el video* elige **Esta pestaña** y activa **Compartir audio de la pestaña**.
-Funciona en Chrome y Edge de escritorio. Algunos videos no permiten verse fuera de YouTube; para esos,
-`scripts/yt-audio.sh` baja el mp3 para subirlo.
+## YouTube
+Dos formas, las dos gratis:
+
+1. **Automática con GuitarrIA Local (recomendada).** Descarga
+   [GuitarrIA-Local.exe](https://github.com/7DCL/GuitarrIA/releases/download/local/GuitarrIA-Local.exe),
+   ábrelo y deja la ventana abierta. Al pegar un enlace, la web le pide el audio, que se baja desde tu
+   conexión, y la tab sale en segundos sin reproducir el video. Solo escucha en `127.0.0.1` y solo atiende a
+   la web de GuitarrIA. Windows puede avisar de «aplicación no reconocida» (no está firmada):
+   *Más información → Ejecutar de todas formas*. En Mac/Linux: `./scripts/local.sh`.
+2. **Sin instalar nada.** El video se incrusta y GuitarrIA graba el audio de la pestaña mientras suena
+   (Chrome/Edge de escritorio; elige *Esta pestaña* y *Compartir audio*).
+
+## Precisión
+`python3 eval/make_data.py && node scripts/eval.cjs` genera audios con notas conocidas (punteo limpio,
+con banda, con ruido y desafinado) y mide el acierto (F1). Úsalo antes de tocar la transcripción.
 
 ## Publicación gratis
 Cada push a `main` publica en GitHub Pages (`.github/workflows/deploy.yml`). Activa una vez:
