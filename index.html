@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Convierte cualquier grabación de guitarra en tablatura con IA, gratis y en tu navegador." />
+    <title>Guitarra IA</title>
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <header class="top">
+      <h1>🎸 Guitarra IA</h1>
+      <nav>
+        <button class="tab-btn active" data-view="transcribe">Transcribir</button>
+        <button class="tab-btn" data-view="tuner">Afinador</button>
+      </nav>
+    </header>
+
+    <main>
+      <section id="view-transcribe" class="view">
+        <div id="drop" class="drop">
+          <p><strong>Arrastra un audio</strong> (mp3, wav, ogg, m4a) o</p>
+          <div class="row">
+            <label class="btn primary">Elegir archivo<input id="file" type="file" accept="audio/*,video/*" hidden /></label>
+            <button id="record" class="btn">● Grabar con micrófono</button>
+            <button id="demo" class="btn">Probar demo</button>
+          </div>
+          <p class="hint">Todo se procesa en tu equipo: nada se sube a ningún servidor. Funciona mejor con la guitarra sola.
+            ¿Un video de YouTube? Usa <code>scripts/yt-audio.sh</code> y sube el mp3.</p>
+        </div>
+
+        <div id="progress" class="progress" hidden><div></div><span>Analizando…</span></div>
+
+        <div id="workspace" hidden>
+          <div class="settings">
+            <label>Afinación <select id="tuning"></select></label>
+            <label>Capo <input id="capo" type="number" min="0" max="12" value="0" /></label>
+            <label>Sensibilidad <input id="sens" type="range" min="0.2" max="0.8" step="0.05" value="0.5" /></label>
+            <label><input id="names" type="checkbox" /> Ver nombres de nota</label>
+          </div>
+
+          <div class="player">
+            <button id="play" class="btn primary">▶</button>
+            <span id="clock">0:00 / 0:00</span>
+            <input id="seek" type="range" min="0" max="1" step="0.01" value="0" />
+            <label>Velocidad
+              <select id="rate">
+                <option value="0.25">25%</option><option value="0.5">50%</option><option value="0.75">75%</option>
+                <option value="0.9">90%</option><option value="1" selected>100%</option>
+              </select>
+            </label>
+            <button id="loopA" class="btn small">A</button>
+            <button id="loopB" class="btn small">B</button>
+            <button id="loopClear" class="btn small">✕ bucle</button>
+            <label title="Sube un 5% la velocidad en cada vuelta del bucle"><input id="ramp" type="checkbox" /> Práctica progresiva</label>
+            <label>Original <input id="volAudio" type="range" min="0" max="1" step="0.05" value="1" /></label>
+            <label>Sintetizado <input id="volSynth" type="range" min="0" max="1" step="0.05" value="0" /></label>
+          </div>
+
+          <div class="chord-bar"><span class="label">Acorde</span><span id="chord">–</span><span id="loopInfo"></span></div>
+          <canvas id="fretboard"></canvas>
+          <div id="tab" class="tab"></div>
+
+          <div class="row exports">
+            <button id="expTxt" class="btn small">Descargar tab (.txt)</button>
+            <button id="expMid" class="btn small">Descargar MIDI</button>
+            <button id="expJson" class="btn small">Descargar proyecto (.json)</button>
+            <label class="btn small">Abrir proyecto<input id="impJson" type="file" accept=".json" hidden /></label>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-tuner" class="view" hidden>
+        <div class="tuner">
+          <div id="tunerNote" class="tuner-note">–</div>
+          <div class="meter"><div id="needle" class="needle"></div><div class="center"></div></div>
+          <div id="tunerInfo" class="hint">Pulsa empezar y toca una cuerda</div>
+          <button id="tunerStart" class="btn primary">Empezar afinador</button>
+          <div id="tunerStrings" class="row"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer>Gratis y de código abierto · Transcripción con <a href="https://basicpitch.io" target="_blank" rel="noopener">Basic Pitch</a></footer>
+    <audio id="audio" preload="auto"></audio>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>
