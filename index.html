@@ -18,6 +18,24 @@
 
     <main>
       <section id="view-transcribe" class="view">
+        <form id="ytForm" class="yt-form">
+          <input id="ytUrl" type="url" placeholder="Pega un enlace de YouTube…" autocomplete="off" />
+          <button class="btn primary" type="submit">Cargar video</button>
+        </form>
+
+        <div id="ytPanel" class="yt-panel" hidden>
+          <div id="ytBox" class="yt-box"></div>
+          <div id="ytCapture" class="yt-capture">
+            <p><strong>Para transcribir</strong>, GuitarrIA escucha el video mientras suena. Al pulsar el botón elige
+              <em>Esta pestaña</em> y activa <em>Compartir audio de la pestaña</em>.</p>
+            <div class="row">
+              <button id="ytStart" class="btn primary">🎧 Transcribir el video</button>
+              <button id="ytStop" class="btn" hidden>■ Parar y transcribir lo escuchado</button>
+            </div>
+            <p id="ytStatus" class="hint"></p>
+          </div>
+        </div>
+
         <div id="drop" class="drop">
           <p><strong>Arrastra un audio</strong> (mp3, wav, ogg, m4a) o</p>
           <div class="row">
@@ -25,8 +43,7 @@
             <button id="record" class="btn">● Grabar con micrófono</button>
             <button id="demo" class="btn">Probar demo</button>
           </div>
-          <p class="hint">Todo se procesa en tu equipo: nada se sube a ningún servidor. Funciona mejor con la guitarra sola.
-            ¿Un video de YouTube? Usa <code>scripts/yt-audio.sh</code> y sube el mp3.</p>
+          <p class="hint">Todo se procesa en tu equipo: nada se sube a ningún servidor. Funciona mejor con la guitarra sola.</p>
         </div>
 
         <div id="progress" class="progress" hidden><div></div><span>Analizando…</span></div>

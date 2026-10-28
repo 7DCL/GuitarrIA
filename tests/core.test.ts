@@ -3,6 +3,7 @@ import { assignFingering, groupNotes, type Note } from '../src/fingering';
 import { toAsciiTab } from '../src/tab';
 import { detectChord, TUNINGS } from '../src/theory';
 import { detectPitch } from '../src/pitch';
+import { parseYouTubeId } from '../src/player';
 
 const std = TUNINGS.standard.strings;
 const note = (start: number, midi: number): Note => ({ start, duration: 0.4, midi, velocity: 0.8 });
@@ -71,4 +72,25 @@ describe('afinador', () => {
   });
 
   it('silencio devuelve null', () => expect(detectPitch(new Float32Array(2048), 44100)).toBeNull());
+});
+
+describe('youtube', () => {
+  it.each([
+    ['https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=42s', 'dQw4w9WgXcQ'],
+    ['https://youtu.be/dQw4w9WgXcQ?si=abc', 'dQw4w9WgXcQ'],
+    ['youtube.com/shorts/dQw4w9WgXcQ', 'dQw4w9WgXcQ'],
+    ['https://m.youtube.com/watch?v=dQw4w9WgXcQ', 'dQw4w9WgXcQ'],
+    ['https://music.youtube.com/watch?v=dQw4w9WgXcQ&list=x', 'dQw4w9WgXcQ'],
+    ['https://www.youtube.com/embed/dQw4w9WgXcQ', 'dQw4w9WgXcQ'],
+    ['dQw4w9WgXcQ', 'dQw4w9WgXcQ'],
+    ['https://vimeo.com/123', null],
+    ['hola', null],
+  ])('%s → %s', (url, id) => expect(parseYouTubeId(url)).toBe(id));
+});
+
+describe('preferencias de digitación', () => {
+  it('un arpegio de Em grave queda en posición abierta', () => {
+    const evs = assignFingering([52, 55, 59, 64, 59, 55, 52].map((m, i) => note(1 + i * 0.5, m)), { tuning: std });
+    expect(Math.max(...evs.map((e) => e.notes[0].fret))).toBeLessThanOrEqual(2);
+  });
 });

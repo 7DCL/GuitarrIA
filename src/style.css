@@ -106,3 +106,20 @@ input[type=range] { accent-color: var(--accent); }
   #fretboard { height: 150px; }
   .tuner-note { font-size: 72px; }
 }
+
+.yt-form { display: flex; gap: 8px; margin-bottom: 12px; }
+.yt-form input {
+  flex: 1; min-width: 0; font: inherit; padding: 10px 14px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--panel); color: var(--text);
+}
+.yt-form input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+.yt-panel { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 12px; margin-bottom: 12px; }
+.yt-panel.compact { grid-template-columns: minmax(0, 1fr); max-width: 560px; }
+.yt-box { aspect-ratio: 16 / 9; background: #000; border-radius: 12px; overflow: hidden; }
+.yt-box iframe { width: 100%; height: 100%; border: 0; display: block; }
+.yt-capture { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px; font-size: 14px; }
+.yt-capture .row { justify-content: flex-start; }
+@media (max-width: 760px) { .yt-panel { grid-template-columns: 1fr; } }
+
+#view-transcribe { display: flex; flex-direction: column; }
+.drop.later { order: 10; margin-top: 16px; padding: 16px; }

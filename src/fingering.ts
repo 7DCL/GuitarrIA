@@ -87,7 +87,7 @@ function candidatesFor(group: Note[], opts: Required<FingeringOptions>): Candida
         if (hi - lo > maxSpan) return;
         const avg = chosen.reduce((s, p) => s + p.fret, 0) / chosen.length;
         // Penaliza abrir mucho la mano y subir mucho por el mástil; premia cuerdas al aire.
-        const cost = (hi - lo) * 0.6 + avg * 0.08 - chosen.filter((p) => p.fret === 0).length * 0.1;
+        const cost = (hi - lo) * 0.6 + avg * 0.2 - chosen.filter((p) => p.fret === 0).length * 0.1;
         result.push({ positions: [...chosen], notes, hand: lo, cost });
         return;
       }

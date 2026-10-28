@@ -2,6 +2,7 @@ import { Midi } from '@tonejs/midi';
 import { assignFingering, type Event, type Note } from './fingering';
 import { drawFretboard } from './fretboard';
 import { detectPitch } from './pitch';
+import { AudioPlayer, YouTubePlayer, captureTabAudio, parseYouTubeId, type Player } from './player';
 import { pluck, renderDemo } from './synth';
 import { stringLabels, toAsciiTab } from './tab';
 import { detectChord, freqToMidi, noteName, TUNINGS } from './theory';
@@ -10,7 +11,9 @@ import { encodeWav, download, formatTime } from './util';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
-const audio = $<HTMLAudioElement>('audio');
+const audioPlayer = new AudioPlayer($<HTMLAudioElement>('audio'));
+let player: Player = audioPlayer;
+let ytPlayer: YouTubePlayer | null = null;
 const canvas = $<HTMLCanvasElement>('fretboard');
 const tabEl = $('tab');
 const tuningSel = $<HTMLSelectElement>('tuning');
@@ -21,6 +24,7 @@ const namesInput = $<HTMLInputElement>('names');
 const state = {
   name: 'cancion',
   raw: null as RawOutput | null,
+  offset: 0, // segundos entre el inicio de la grabación y el segundo 0 del video
   notes: [] as Note[],
   events: [] as Event[],
   chords: [] as (string | null)[],
@@ -99,7 +103,88 @@ $('record').addEventListener('click', async (e) => {
   }
 });
 
-async function loadBlob(blob: Blob, name: string) {
+// ---------- YouTube ----------
+// Sin servidor: el video se incrusta y GuitarrIA graba el audio de la pestaña mientras suena.
+const ytStatus = $('ytStatus');
+const ytStart = $<HTMLButtonElement>('ytStart');
+const ytStop = $<HTMLButtonElement>('ytStop');
+let capture: { startedAt: number; stop: () => Promise<Blob> } | null = null;
+let ytOffset: number | null = null;
+
+$('ytForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const id = parseYouTubeId($<HTMLInputElement>('ytUrl').value);
+  if (!id) {
+    alert('No reconozco ese enlace de YouTube.');
+    return;
+  }
+  if (capture) await finishCapture(false);
+  player.pause();
+  $('workspace').hidden = true;
+  $('ytPanel').hidden = false;
+  $('ytPanel').classList.remove('compact');
+  $('ytCapture').hidden = false;
+  ytStatus.textContent = 'Cargando video…';
+  try {
+    ytPlayer = await YouTubePlayer.create($('ytBox'), id);
+    showPaused(ytPlayer);
+    ytPlayer.onEnded(() => capture && finishCapture(true));
+    ytStatus.textContent = 'Listo. Dura ' + formatTime(ytPlayer.duration) + ': la transcripción tarda lo mismo que el video.';
+  } catch (err) {
+    ytStatus.textContent = (err as Error).message;
+  }
+});
+
+ytStart.addEventListener('click', async () => {
+  const yt = ytPlayer;
+  if (!yt || capture) return;
+  try {
+    yt.pause();
+    yt.seek(0);
+    capture = await captureTabAudio();
+  } catch (err) {
+    ytStatus.textContent = (err as Error).name === 'NotAllowedError' ? 'Captura cancelada.' : (err as Error).message;
+    return;
+  }
+  const cap = capture;
+  // Alinear la grabación con el video: momento en que empieza a sonar de verdad.
+  yt.onStateChange((paused) => {
+    if (!paused && capture === cap && ytOffset === null) ytOffset = (performance.now() - cap.startedAt) / 1000 - yt.time;
+  });
+  ytOffset = null;
+  yt.rate = 1;
+  yt.volume = 1;
+  yt.play();
+  ytStart.hidden = true;
+  ytStop.hidden = false;
+  const tick = () => {
+    if (capture !== cap) return;
+    ytStatus.textContent = `Escuchando… ${formatTime(yt.time)} / ${formatTime(yt.duration)} (no pauses el video)`;
+    setTimeout(tick, 500);
+  };
+  tick();
+});
+ytStop.addEventListener('click', () => finishCapture(true));
+
+async function finishCapture(transcribe: boolean) {
+  const cap = capture;
+  if (!cap) return;
+  capture = null;
+  ytStart.hidden = false;
+  ytStop.hidden = true;
+  const blob = await cap.stop();
+  ytPlayer?.pause();
+  if (!transcribe || !ytPlayer) return;
+  ytStatus.textContent = '';
+  $('ytCapture').hidden = true;
+  $('ytPanel').classList.add('compact');
+  loadBlob(blob, ytPlayer.title, ytPlayer, ytOffset ?? 0);
+}
+
+/** Transcribe un audio. Si viene de YouTube, se reproduce con el video en vez de con el archivo. */
+async function loadBlob(blob: Blob, name: string, source?: YouTubePlayer, offset = 0) {
+  player.pause();
+  state.offset = offset;
   state.name = name.replace(/\.[^.]+$/, '') || 'cancion';
   const progress = $('progress');
   const bar = progress.querySelector('div')!;
@@ -109,7 +194,13 @@ async function loadBlob(blob: Blob, name: string) {
   label.textContent = 'Decodificando audio…';
   try {
     const buffer = await audioCtx().decodeAudioData(await blob.arrayBuffer());
-    audio.src = URL.createObjectURL(blob);
+    if (source) player = source;
+    else {
+      $<HTMLAudioElement>('audio').src = URL.createObjectURL(blob);
+      player = audioPlayer;
+      $('ytPanel').hidden = true;
+    }
+    player.rate = Number(rateSel.value);
     label.textContent = 'La IA está escuchando… (la primera vez descarga el modelo)';
     state.raw = await runModel(buffer, (p) => {
       bar.style.width = `${Math.round(p * 100)}%`;
@@ -118,6 +209,7 @@ async function loadBlob(blob: Blob, name: string) {
     refreshNotes();
     progress.hidden = true;
     $('workspace').hidden = false;
+    drop.classList.add('later'); // con una canción cargada, la zona de subida pasa al final
     resetLoop();
   } catch (err) {
     console.error(err);
@@ -129,7 +221,9 @@ async function loadBlob(blob: Blob, name: string) {
 function refreshNotes() {
   if (!state.raw) return;
   const sens = Number(sensInput.value);
-  state.notes = extractNotes(state.raw, { onsetThreshold: 1 - sens, frameThreshold: 0.45 - sens * 0.3 });
+  state.notes = extractNotes(state.raw, { onsetThreshold: 1 - sens, frameThreshold: 0.45 - sens * 0.3 })
+    .map((n) => ({ ...n, start: n.start - state.offset }))
+    .filter((n) => n.start >= 0);
   refreshFingering();
 }
 
@@ -191,23 +285,22 @@ const rampInput = $<HTMLInputElement>('ramp');
 
 playBtn.addEventListener('click', () => {
   audioCtx().resume();
-  if (audio.paused) audio.play();
-  else audio.pause();
+  if (player.paused) player.play();
+  else player.pause();
 });
-audio.addEventListener('play', () => (playBtn.textContent = '❚❚'));
-audio.addEventListener('pause', () => (playBtn.textContent = '▶'));
-audio.addEventListener('loadedmetadata', () => (seekInput.max = String(audio.duration)));
+const showPaused = (p: Player) => p.onStateChange((paused) => p === player && (playBtn.textContent = paused ? '▶' : '❚❚'));
+showPaused(audioPlayer);
 seekInput.addEventListener('input', () => seek(Number(seekInput.value)));
-rateSel.addEventListener('change', () => (audio.playbackRate = Number(rateSel.value)));
-$<HTMLInputElement>('volAudio').addEventListener('input', (e) => (audio.volume = Number((e.target as HTMLInputElement).value)));
+rateSel.addEventListener('change', () => (player.rate = Number(rateSel.value)));
+$<HTMLInputElement>('volAudio').addEventListener('input', (e) => (player.volume = Number((e.target as HTMLInputElement).value)));
 $<HTMLInputElement>('volSynth').addEventListener('input', (e) => {
   audioCtx();
   synthOut!.gain.value = Number((e.target as HTMLInputElement).value);
 });
 
 function seek(t: number) {
-  audio.currentTime = Math.max(0, t);
-  state.lastTime = audio.currentTime;
+  player.seek(t);
+  state.lastTime = Math.max(0, t);
 }
 
 document.addEventListener('keydown', (e) => {
@@ -215,19 +308,19 @@ document.addEventListener('keydown', (e) => {
   if (e.code === 'Space') {
     e.preventDefault();
     playBtn.click();
-  } else if (e.key === 'ArrowLeft') seek(audio.currentTime - 2);
-  else if (e.key === 'ArrowRight') seek(audio.currentTime + 2);
+  } else if (e.key === 'ArrowLeft') seek(player.time - 2);
+  else if (e.key === 'ArrowRight') seek(player.time + 2);
 });
 
 // ---------- Bucle A-B ----------
 $('loopA').addEventListener('click', () => {
-  state.loopA = audio.currentTime;
+  state.loopA = player.time;
   if (state.loopB !== null && state.loopB <= state.loopA) state.loopB = null;
   markLoop();
 });
 $('loopB').addEventListener('click', () => {
   if (state.loopA === null) state.loopA = 0;
-  if (audio.currentTime > state.loopA) state.loopB = audio.currentTime;
+  if (player.time > state.loopA) state.loopB = player.time;
   markLoop();
 });
 $('loopClear').addEventListener('click', resetLoop);
@@ -242,7 +335,7 @@ function markLoop() {
   $('loopA').classList.toggle('on', a !== null);
   $('loopB').classList.toggle('on', b !== null);
   $('loopInfo').textContent =
-    a !== null && b !== null ? `Bucle ${formatTime(a)} → ${formatTime(b)} · ${Math.round(audio.playbackRate * 100)}%` : '';
+    a !== null && b !== null ? `Bucle ${formatTime(a)} → ${formatTime(b)} · ${Math.round(player.rate * 100)}%` : '';
   tabEl.querySelectorAll<HTMLElement>('.col[data-i]').forEach((col) => {
     const ev = state.events[Number(col.dataset.i)];
     col.classList.toggle('loop', a !== null && b !== null && ev.start >= a && ev.start <= b);
@@ -265,28 +358,29 @@ function eventIndexAt(t: number): number {
 }
 
 function frame() {
-  let t = audio.currentTime;
+  let t = player.time;
   if (state.loopA !== null && state.loopB !== null && t >= state.loopB) {
     seek(state.loopA);
     t = state.loopA;
-    if (rampInput.checked && audio.playbackRate < 1) {
-      audio.playbackRate = Math.min(1, +(audio.playbackRate + 0.05).toFixed(2));
+    if (rampInput.checked && player.rate < 1) {
+      player.rate = Math.min(1, +(player.rate + 0.05).toFixed(2));
       markLoop();
     }
   }
 
-  if (!audio.paused && synthOut && synthOut.gain.value > 0 && ctx) {
+  if (!player.paused && synthOut && synthOut.gain.value > 0 && ctx) {
     for (let i = Math.max(0, eventIndexAt(state.lastTime)); i < state.events.length; i++) {
       const ev = state.events[i];
       if (ev.start > t) break;
       if (ev.start > state.lastTime)
-        ev.notes.forEach((n) => pluck(ctx!, synthOut!, n.midi, n.duration / audio.playbackRate, n.velocity));
+        ev.notes.forEach((n) => pluck(ctx!, synthOut!, n.midi, n.duration / player.rate, n.velocity));
     }
   }
   state.lastTime = t;
 
   if (!$('workspace').hidden) {
-    $('clock').textContent = `${formatTime(t)} / ${formatTime(audio.duration || 0)}`;
+    $('clock').textContent = `${formatTime(t)} / ${formatTime(player.duration || 0)}`;
+    seekInput.max = String(player.duration);
     seekInput.value = String(t);
 
     const idx = eventIndexAt(t);
