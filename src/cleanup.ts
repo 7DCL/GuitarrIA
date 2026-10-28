@@ -10,6 +10,8 @@ export interface CleanOptions {
   minDuration?: number; // segundos
   minMidi?: number;
   maxMidi?: number;
+  merge?: boolean; // unir re-ataques falsos (apagado por defecto: en pruebas borraba notas repetidas reales)
+  harmonics?: boolean; // quitar armónicos (solo punteo)
 }
 
 const HARMONICS = new Set([12, 19, 24]); // 2º, 3º y 4º armónico
@@ -51,9 +53,13 @@ function monophonic(notes: Note[]): Note[] {
     while (i + group.length < notes.length && notes[i + group.length].start - notes[i].start < 0.06)
       group.push(notes[i + group.length]);
     i += group.length;
-    const loudest = Math.max(...group.map((n) => n.velocity));
     const prev = out[out.length - 1];
-    const strong = group.filter((n) => n.velocity >= loudest * 0.6);
+    // Notas muy por debajo de la melodía reciente son acompañamiento (bajo, acordes): se ignoran.
+    const recent = out.slice(-8).map((n) => n.midi).sort((a, b) => a - b);
+    const median = recent.length >= 4 ? recent[recent.length >> 1] : -Infinity;
+    const inRange = group.filter((n) => n.midi >= median - 10);
+    if (!inRange.length) continue;
+    const strong = inRange.filter((n) => n.velocity >= Math.max(...inRange.map((x) => x.velocity)) * 0.6);
     // Sin contexto, la más aguda; si hay una melodía en curso, la que menos salta (más aguda si empatan).
     const pick = strong.sort((a, b) =>
       prev ? Math.abs(a.midi - prev.midi) - Math.abs(b.midi - prev.midi) || b.midi - a.midi : b.midi - a.midi,
@@ -76,7 +82,8 @@ export function cleanNotes(notes: Note[], opts: CleanOptions): Note[] {
     .sort((a, b) => a.start - b.start || a.midi - b.midi)
     .filter((n) => n.midi >= lo && n.midi <= hi && n.duration >= minDur && n.velocity >= max * minVel);
   // En acordes las octavas suelen ser reales (cejillas, power chords): solo se filtran en punteo.
-  if (lead) out = monophonic(mergeRepeats(dropHarmonics(out)));
-  else out = mergeRepeats(out);
+  if (lead && opts.harmonics !== false) out = dropHarmonics(out);
+  if (opts.merge) out = mergeRepeats(out);
+  if (lead) out = monophonic(out);
   return out;
 }

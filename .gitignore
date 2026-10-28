@@ -3,3 +3,4 @@ dist
 public/model
 *.log
 .DS_Store
+eval/data

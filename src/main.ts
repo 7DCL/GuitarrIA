@@ -1,5 +1,5 @@
 import { Midi } from '@tonejs/midi';
-import { cleanNotes, type Mode } from './cleanup';
+import type { Mode } from './cleanup';
 import { assignFingering, type Event, type Note } from './fingering';
 import { drawFretboard } from './fretboard';
 import { detectPitch } from './pitch';
@@ -7,7 +7,7 @@ import { AudioPlayer, YouTubePlayer, captureTabAudio, parseYouTubeId, type Playe
 import { pluck, renderDemo } from './synth';
 import { stringLabels, toAsciiTab } from './tab';
 import { detectChord, freqToMidi, noteName, TUNINGS } from './theory';
-import { extractNotes, runModel, type RawOutput } from './transcribe';
+import { analyze, toNotes, type NoiseLevel, type Prepared } from './pipeline';
 import { encodeWav, download, formatTime } from './util';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -21,11 +21,13 @@ const tuningSel = $<HTMLSelectElement>('tuning');
 const capoInput = $<HTMLInputElement>('capo');
 const sensInput = $<HTMLInputElement>('sens');
 const modeSel = $<HTMLSelectElement>('mode');
+const noiseSel = $<HTMLSelectElement>('noise');
 const namesInput = $<HTMLInputElement>('names');
 
 const state = {
   name: 'cancion',
-  raw: null as RawOutput | null,
+  buffer: null as AudioBuffer | null,
+  prepared: null as Prepared | null,
   offset: 0, // segundos entre el inicio de la grabación y el segundo 0 del video
   notes: [] as Note[],
   events: [] as Event[],
@@ -203,12 +205,8 @@ async function loadBlob(blob: Blob, name: string, source?: YouTubePlayer, offset
       $('ytPanel').hidden = true;
     }
     player.rate = Number(rateSel.value);
-    label.textContent = 'La IA está escuchando… (la primera vez descarga el modelo)';
-    state.raw = await runModel(buffer, (p) => {
-      bar.style.width = `${Math.round(p * 100)}%`;
-      label.textContent = `Transcribiendo… ${Math.round(p * 100)}%`;
-    });
-    refreshNotes();
+    state.buffer = buffer;
+    await analyzeBuffer();
     progress.hidden = true;
     $('workspace').hidden = false;
     drop.classList.add('later'); // con una canción cargada, la zona de subida pasa al final
@@ -219,19 +217,33 @@ async function loadBlob(blob: Blob, name: string, source?: YouTubePlayer, offset
   }
 }
 
+/** Pasa el audio por el filtro de ruido, la corrección de afinación y la IA. */
+async function analyzeBuffer() {
+  if (!state.buffer) return;
+  const progress = $('progress');
+  const bar = progress.querySelector('div')!;
+  const label = progress.querySelector('span')!;
+  progress.hidden = false;
+  label.textContent = 'La IA está escuchando… (la primera vez descarga el modelo)';
+  state.prepared = await analyze(state.buffer, { noise: noiseSel.value as NoiseLevel, autoTune: true }, (p, what) => {
+    bar.style.width = `${Math.round(p * 100)}%`;
+    label.textContent = `${what}… ${Math.round(p * 100)}%`;
+  });
+  progress.hidden = true;
+  const c = Math.round(state.prepared.cents);
+  $('tuneInfo').textContent =
+    state.prepared.rate !== 1 ? `Tema desafinado ${c > 0 ? '+' : ''}${c} cents: corregido` : 'Afinación del tema: La 440';
+  refreshNotes();
+}
+
 // ---------- Transcripción → digitación ----------
 function refreshNotes() {
-  if (!state.raw) return;
-  const sens = Number(sensInput.value);
-  const mode = modeSel.value as Mode;
-  const notes = extractNotes(state.raw, {
-    onsetThreshold: 1 - sens,
-    frameThreshold: 0.45 - sens * 0.3,
-    melodiaTrick: mode === 'chords',
-  })
-    .map((n) => ({ ...n, start: n.start - state.offset }))
-    .filter((n) => n.start >= 0);
-  state.notes = cleanNotes(notes, { mode });
+  if (!state.prepared) return;
+  state.notes = toNotes(state.prepared, {
+    mode: modeSel.value as Mode,
+    sensitivity: Number(sensInput.value),
+    offset: state.offset,
+  });
   refreshFingering();
 }
 
@@ -285,6 +297,7 @@ tuningSel.addEventListener('change', refreshFingering);
 capoInput.addEventListener('input', refreshFingering);
 sensInput.addEventListener('change', refreshNotes);
 modeSel.addEventListener('change', refreshNotes);
+noiseSel.addEventListener('change', analyzeBuffer);
 
 // ---------- Reproductor ----------
 const playBtn = $('play');
@@ -443,7 +456,8 @@ $<HTMLInputElement>('impJson').addEventListener('change', async (e) => {
   try {
     const data = JSON.parse(await f.text());
     state.name = data.name ?? 'cancion';
-    state.raw = null;
+    state.prepared = null;
+    state.buffer = null;
     state.notes = data.notes;
     if (TUNINGS[data.tuning]) tuningSel.value = data.tuning;
     capoInput.value = String(data.capo ?? 0);

@@ -5,6 +5,7 @@ import { detectChord, TUNINGS } from '../src/theory';
 import { detectPitch } from '../src/pitch';
 import { parseYouTubeId } from '../src/player';
 import { cleanNotes } from '../src/cleanup';
+import { estimateCents, noiseGate } from '../src/pipeline';
 
 const std = TUNINGS.standard.strings;
 const note = (start: number, midi: number): Note => ({ start, duration: 0.4, midi, velocity: 0.8 });
@@ -110,7 +111,7 @@ describe('limpieza (modo punteo)', () => {
   });
 
   it('une re-ataques falsos de una nota sostenida', () => {
-    const out = cleanNotes([n(0, 64, 0.8, 0.3), n(0.31, 64, 0.5, 0.4)], { mode: 'lead' });
+    const out = cleanNotes([n(0, 64, 0.8, 0.3), n(0.31, 64, 0.5, 0.4)], { mode: 'lead', merge: true });
     expect(out).toHaveLength(1);
     expect(out[0].duration).toBeCloseTo(0.71, 2);
   });
@@ -128,5 +129,34 @@ describe('limpieza (modo punteo)', () => {
   it('en modo acordes conserva las octavas', () => {
     const out = cleanNotes([n(0, 40), n(0, 47), n(0, 52)], { mode: 'chords' });
     expect(out).toHaveLength(3);
+  });
+});
+
+describe('afinación del tema', () => {
+  const contours = (peak: number) =>
+    Array.from({ length: 20 }, () => {
+      const row = new Array(264).fill(0);
+      const b = Math.floor(peak);
+      const f = peak - b;
+      row[b] = 1 - f * 0.5;
+      row[b + 1] = 0.5 + f * 0.5;
+      row[b - 1] = 0.5 - f * 0.4;
+      return row;
+    });
+  it('afinado a 440 da ~0 cents', () => {
+    expect(Math.abs(estimateCents({ frames: [], onsets: [], contours: contours(100) }))).toBeLessThan(15);
+  });
+  it('detecta una grabación alta', () => {
+    expect(estimateCents({ frames: [], onsets: [], contours: contours(101) })).toBeGreaterThan(15);
+  });
+});
+
+describe('filtro de ruido', () => {
+  it('atenúa el ruido de fondo y conserva la nota', () => {
+    const data = new Float32Array(44100).map((_, i) => (i > 22050 ? Math.sin(i / 10) * 0.5 : (Math.random() - 0.5) * 0.02));
+    noiseGate(data, 2);
+    const rms = (a: Float32Array) => Math.sqrt(a.reduce((s, x) => s + x * x, 0) / a.length);
+    expect(rms(data.subarray(5000, 20000))).toBeLessThan(0.003);
+    expect(rms(data.subarray(30000, 44000))).toBeGreaterThan(0.3);
   });
 });
