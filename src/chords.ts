@@ -96,8 +96,14 @@ export function chromagram(frames: number[][], timeScale = 1, offset = 0, bassMe
         if (midi < 60) lowNow[midi % 12] += v * (60 - midi); // cuanto más grave, más peso
       }
     }
-    // Una nota grave nueva desplaza a la anterior, que se va apagando.
-    for (let i = 0; i < 12; i++) low[i] = Math.max(low[i] * bassMemory, lowNow[i] / (f1 - f0));
+    // Una nota grave nueva desplaza a la anterior, que se va apagando (más deprisa si ya no suena).
+    // "Nueva" = tan grave y fuerte como el bajo actual (en un arpegio las notas de arriba no cuentan).
+    const n = f1 - f0;
+    const fresh = Math.max(...lowNow) / n >= Math.max(...low) * 1.0;
+    for (let i = 0; i < 12; i++) {
+      const keep = fresh && lowNow[i] === 0 ? bassMemory ** 3 : bassMemory;
+      low[i] = Math.max(low[i] * keep, lowNow[i] / n);
+    }
     let bass = -1;
     let best = 0;
     low.forEach((v, i) => {
@@ -132,7 +138,9 @@ function scores(w: ChromaWindow, o: Required<ChordOptions>): number[] {
     for (let i = 0; i < 12; i++) dot += t.vec[i] * w.chroma[i];
     // El bajo en la tónica refuerza el acorde (ayuda a distinguir Am de C6, Em de G6…).
     const bassBonus = w.bass === t.root ? 1 : t.q.tones.some(([iv]) => (t.root + iv) % 12 === w.bass) ? 0.25 : -0.5;
-    return dot + t.q.prior * o.priorScale + bassBonus * o.bassWeight;
+    // Un "5" (quinta sola) no lleva tercera: si la tercera suena, es mayor o menor (Em abierto tiene un solo Sol).
+    const third = t.q.suffix === '5' ? Math.max(w.chroma[(t.root + 3) % 12], w.chroma[(t.root + 4) % 12]) : 0;
+    return dot + t.q.prior * o.priorScale + bassBonus * o.bassWeight - third * 0.5;
   });
 }
 
@@ -260,4 +268,18 @@ export function chordAt(segs: ChordSegment[], t: number): ChordSegment | null {
     else return segs[mid];
   }
   return null;
+}
+
+/** Activaciones aproximadas a partir de notas ya transcritas (proyectos importados sin audio). */
+export function framesFromNotes(notes: { start: number; duration: number; midi: number; velocity: number }[]): number[][] {
+  const end = Math.max(0, ...notes.map((n) => n.start + n.duration));
+  const frames = Array.from({ length: Math.ceil(end * FPS) + 1 }, () => new Array<number>(88).fill(0));
+  for (const n of notes) {
+    const k = n.midi - 21;
+    if (k < 0 || k >= 88) continue;
+    const v = Math.min(1, 0.5 + n.velocity * 0.5);
+    for (let f = Math.floor(n.start * FPS); f < Math.ceil((n.start + n.duration) * FPS) && f < frames.length; f++)
+      frames[f][k] = Math.max(frames[f][k], v);
+  }
+  return frames;
 }

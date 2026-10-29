@@ -30,7 +30,7 @@ export function findVoicing(root: number, quality: string, bass: number, tuning:
     const walk = (s: number) => {
       if (s === n) {
         const sounding = frets.map((f, i) => (f < 0 ? -1 : tuning[i] + f)).filter((m) => m >= 0);
-        if (sounding.length < 4) return;
+        if (sounding.length < (quality === '5' ? 3 : 4)) return; // la quinta sola se toca en 3 cuerdas
         const first = frets.findIndex((f) => f >= 0);
         const last = n - 1 - [...frets].reverse().findIndex((f) => f >= 0);
         // Las cuerdas que suenan forman un bloque seguido (sin cuerdas apagadas en medio).
@@ -92,21 +92,21 @@ function baseFret(frets: number[]): number {
 export function voicingSvg(v: Voicing, name: string): string {
   const n = v.frets.length;
   const W = 120;
-  const H = 150;
+  const H = 156;
   const left = 18;
-  const top = 34;
+  const top = 42;
   const gap = (W - left * 2) / (n - 1);
   const fh = 22;
   const x = (s: number) => left + s * gap;
   const parts: string[] = [];
-  parts.push(`<text x="${W / 2}" y="14" text-anchor="middle" class="vd-name">${name}</text>`);
+  parts.push(`<text x="${W / 2}" y="15" text-anchor="middle" class="vd-name">${name}</text>`);
   if (v.base === 1) parts.push(`<rect x="${left}" y="${top - 4}" width="${W - left * 2}" height="4" class="vd-nut"/>`);
   else parts.push(`<text x="4" y="${top + fh / 2 + 4}" class="vd-base">${v.base}</text>`);
   for (let f = 0; f <= 5; f++) parts.push(`<line x1="${left}" x2="${W - left}" y1="${top + f * fh}" y2="${top + f * fh}" class="vd-line"/>`);
   for (let s = 0; s < n; s++) parts.push(`<line x1="${x(s)}" x2="${x(s)}" y1="${top}" y2="${top + 5 * fh}" class="vd-line"/>`);
   v.frets.forEach((f, s) => {
-    if (f < 0) parts.push(`<text x="${x(s)}" y="${top - 9}" text-anchor="middle" class="vd-mark">×</text>`);
-    else if (f === 0) parts.push(`<circle cx="${x(s)}" cy="${top - 13}" r="4" class="vd-open"/>`);
+    if (f < 0) parts.push(`<text x="${x(s)}" y="${top - 7}" text-anchor="middle" class="vd-mark">×</text>`);
+    else if (f === 0) parts.push(`<circle cx="${x(s)}" cy="${top - 11}" r="4" class="vd-open"/>`);
     else parts.push(`<circle cx="${x(s)}" cy="${top + (f - v.base + 0.5) * fh}" r="7" class="vd-dot"/>`);
   });
   return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Diagrama de ${name}">${parts.join('')}</svg>`;
