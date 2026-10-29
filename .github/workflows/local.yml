@@ -6,6 +6,9 @@ on:
   push:
     branches: [main]
     paths: ['local/**', '.github/workflows/local.yml']
+  # Cada lunes: rehace el .exe con el yt-dlp más reciente (YouTube cambia a menudo).
+  schedule:
+    - cron: '0 6 * * 1'
   workflow_dispatch:
 
 permissions:
@@ -22,7 +25,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install -r local/requirements.txt "pyinstaller==6.*"
+      - run: pip install --upgrade -r local/requirements.txt "pyinstaller==6.*"
       - name: Localizar deno
         run: echo "DENO=$(python -c 'import deno; print(deno.find_deno_bin())')" >> "$GITHUB_ENV"
       - name: Empaquetar
@@ -35,12 +38,12 @@ jobs:
         run: GUITARRIA_SELFTEST=1 ./dist/GuitarrIA-Local.exe
       - name: Probar una descarga real de YouTube (informativo; YouTube a veces bloquea a GitHub)
         continue-on-error: true
-        run: python -c "import sys; sys.path.insert(0, 'local'); import guitarria_local as g; p, t = g.download('https://www.youtube.com/watch?v=jNQXAC9IVRw'); print('OK', t, p.suffix, p.stat().st_size)"
+        run: python -c "import sys; sys.path.insert(0, 'local'); import guitarria_local as g; p, t = g.download('jNQXAC9IVRw'); print('OK', t, p.suffix, p.stat().st_size)"
       - name: Publicar
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete local --yes --cleanup-tag || true
-          gh release create local dist/GuitarrIA-Local.exe \
-            --title "GuitarrIA Local" \
-            --notes "Descarga el audio de YouTube en tu PC para que GuitarrIA transcriba al instante, sin reproducir el video. Ábrelo, deja la ventana abierta y pega el enlace en https://7dcl.github.io/GuitarrIA/"
+          NOTES="Descarga el audio de YouTube en tu PC para que GuitarrIA transcriba al instante, sin reproducir el video. Ábrelo, deja la ventana abierta y pega el enlace en https://7dcl.github.io/GuitarrIA/"
+          # Reemplaza el .exe sin borrar la release (el enlace de descarga nunca se rompe).
+          gh release upload local dist/GuitarrIA-Local.exe --clobber \
+            || gh release create local dist/GuitarrIA-Local.exe --title "GuitarrIA Local" --notes "$NOTES"

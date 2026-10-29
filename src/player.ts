@@ -10,6 +10,7 @@ export interface Player {
   pause(): void;
   seek(t: number): void;
   onStateChange(cb: (paused: boolean) => void): void;
+  destroy(): void;
 }
 
 export class AudioPlayer implements Player {
@@ -36,17 +37,82 @@ export class AudioPlayer implements Player {
     this.el.volume = v;
   }
   play() {
-    this.el.play();
+    // play() rechaza si el navegador bloquea el audio o se interrumpe con pause(): no es un error real.
+    this.el.play().catch(() => {});
   }
   pause() {
     this.el.pause();
   }
   seek(t: number) {
-    this.el.currentTime = Math.max(0, t);
+    this.el.currentTime = Math.max(0, Math.min(t, this.duration || t));
+  }
+  private handlers: [string, () => void][] = [];
+  onStateChange(cb: (paused: boolean) => void) {
+    const on = () => cb(false);
+    const off = () => cb(true);
+    this.el.addEventListener('play', on);
+    this.el.addEventListener('pause', off);
+    this.handlers.push(['play', on], ['pause', off]);
+  }
+  destroy() {
+    this.el.pause();
+    for (const [ev, h] of this.handlers) this.el.removeEventListener(ev, h);
+    this.handlers = [];
+  }
+}
+
+/** Reloj sin audio (proyectos abiertos desde .json): el tiempo avanza y suena solo el sintetizado. */
+export class ClockPlayer implements Player {
+  private t0 = 0;
+  private wall = 0;
+  private playing = false;
+  private r = 1;
+  volume = 1;
+  private listeners: ((paused: boolean) => void)[] = [];
+  constructor(public duration: number) {}
+  get time() {
+    const t = this.playing ? this.t0 + ((performance.now() - this.wall) / 1000) * this.r : this.t0;
+    if (t >= this.duration && this.playing) {
+      this.t0 = this.duration;
+      this.playing = false;
+      this.listeners.forEach((cb) => cb(true));
+    }
+    return Math.min(t, this.duration);
+  }
+  get paused() {
+    return !this.playing;
+  }
+  get rate() {
+    return this.r;
+  }
+  set rate(v: number) {
+    this.t0 = this.time;
+    this.wall = performance.now();
+    this.r = v;
+  }
+  play() {
+    if (this.playing) return;
+    if (this.t0 >= this.duration) this.t0 = 0;
+    this.wall = performance.now();
+    this.playing = true;
+    this.listeners.forEach((cb) => cb(false));
+  }
+  pause() {
+    if (!this.playing) return;
+    this.t0 = this.time;
+    this.playing = false;
+    this.listeners.forEach((cb) => cb(true));
+  }
+  seek(t: number) {
+    this.t0 = Math.max(0, Math.min(t, this.duration));
+    this.wall = performance.now();
   }
   onStateChange(cb: (paused: boolean) => void) {
-    this.el.addEventListener('play', () => cb(false));
-    this.el.addEventListener('pause', () => cb(true));
+    this.listeners.push(cb);
+  }
+  destroy() {
+    this.playing = false;
+    this.listeners = [];
   }
 }
 
@@ -80,6 +146,8 @@ interface YTPlayer {
   getPlaybackRate(): number;
   setVolume(v: number): void;
   getVideoData(): { title?: string };
+  getAvailablePlaybackRates?(): number[];
+  destroy?(): void;
 }
 declare global {
   interface Window {
@@ -89,13 +157,23 @@ declare global {
 }
 
 let apiReady: Promise<void> | null = null;
-function loadApi(): Promise<void> {
-  apiReady ??= new Promise((resolve, reject) => {
+function loadApi(timeoutMs = 12000): Promise<void> {
+  apiReady ??= new Promise<void>((resolve, reject) => {
     if (window.YT?.Player) return resolve();
-    window.onYouTubeIframeAPIReady = () => resolve();
+    const timer = setTimeout(() => fail('YouTube no responde. Revisa tu conexión o un bloqueador de anuncios.'), timeoutMs);
     const s = document.createElement('script');
+    const fail = (msg: string) => {
+      clearTimeout(timer);
+      s.remove();
+      apiReady = null; // permite reintentar
+      reject(new Error(msg));
+    };
+    window.onYouTubeIframeAPIReady = () => {
+      clearTimeout(timer);
+      resolve();
+    };
     s.src = 'https://www.youtube.com/iframe_api';
-    s.onerror = () => reject(new Error('No se pudo cargar YouTube'));
+    s.onerror = () => fail('No se pudo cargar YouTube. Revisa tu conexión o un bloqueador de anuncios.');
     document.head.appendChild(s);
   });
   return apiReady;
@@ -134,6 +212,7 @@ export class YouTubePlayer implements Player {
           onReady: () => resolve(),
           onError: (e: { data: number }) => reject(new Error(ERRORS[e.data] ?? 'Error de YouTube.')),
           onStateChange: (e: { data: number }) => {
+            if (p.dead) return;
             p.sync();
             p.listeners.forEach((cb) => cb(e.data !== PLAYING));
             if (e.data === ENDED) p.endListeners.forEach((cb) => cb());
@@ -145,6 +224,7 @@ export class YouTubePlayer implements Player {
   }
 
   private lastReported = -1;
+  private dead = false;
 
   private sync() {
     this.lastReported = this.yt.getCurrentTime();
@@ -170,7 +250,13 @@ export class YouTubePlayer implements Player {
     return this.yt.getPlaybackRate();
   }
   set rate(r: number) {
-    this.yt.setPlaybackRate(r);
+    // YouTube solo admite ciertas velocidades (normalmente 0.25–2): usamos la más cercana.
+    const rates = this.rates;
+    this.yt.setPlaybackRate(rates.reduce((b, x) => (Math.abs(x - r) < Math.abs(b - r) ? x : b), rates[0]));
+  }
+  get rates(): number[] {
+    const r = this.yt.getAvailablePlaybackRates?.() ?? [];
+    return r.length ? r : [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
   }
   get volume() {
     return this.vol;
@@ -198,13 +284,23 @@ export class YouTubePlayer implements Player {
   onEnded(cb: () => void) {
     this.endListeners.push(cb);
   }
+  destroy() {
+    this.dead = true;
+    this.listeners = [];
+    this.endListeners = [];
+    try {
+      this.yt.destroy?.();
+    } catch {
+      /* el iframe ya no existe */
+    }
+  }
 }
 
 /**
  * Graba el audio de esta pestaña (incluido el video de YouTube incrustado).
  * Forma gratuita de obtener el audio sin servidor; solo Chrome/Edge de escritorio.
  */
-export async function captureTabAudio(): Promise<{ startedAt: number; stop: () => Promise<Blob> }> {
+export async function captureTabAudio(onEnded?: () => void): Promise<{ startedAt: number; stop: () => Promise<Blob> }> {
   if (!navigator.mediaDevices?.getDisplayMedia) {
     throw new Error('Tu navegador no permite capturar audio. Usa Chrome o Edge en un ordenador.');
   }
@@ -224,15 +320,20 @@ export async function captureTabAudio(): Promise<{ startedAt: number; stop: () =
   const chunks: Blob[] = [];
   recorder.ondataavailable = (e) => chunks.push(e.data);
   const started = new Promise<number>((resolve) => (recorder.onstart = () => resolve(performance.now())));
+  // Si el usuario pulsa "Dejar de compartir" en el navegador, avisamos para terminar la grabación.
+  audioTracks[0].onended = () => onEnded?.();
   recorder.start(1000);
+  const blob = () => new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
   return {
     startedAt: await started,
     stop: () =>
       new Promise((resolve) => {
-        recorder.onstop = () => {
+        const done = () => {
           stream.getTracks().forEach((t) => t.stop());
-          resolve(new Blob(chunks, { type: recorder.mimeType || 'audio/webm' }));
+          resolve(blob());
         };
+        if (recorder.state === 'inactive') return done();
+        recorder.onstop = done;
         recorder.stop();
       }),
   };
