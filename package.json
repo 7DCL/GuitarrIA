@@ -8,12 +8,16 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "e2e": "node scripts/e2e.cjs",
+    "eval": "node scripts/eval.cjs",
+    "qa": "./scripts/qa.sh"
   },
   "keywords": [],
   "author": "",
   "license": "MIT",
   "devDependencies": {
+    "playwright": "1.63.0",
     "typescript": "^5.9.3",
     "vite": "^5.4.21",
     "vitest": "^2.1.9"

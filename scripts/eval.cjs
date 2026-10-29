@@ -29,6 +29,22 @@ const CONFIGS = JSON.parse(process.env.CONFIGS || 'null') || [
     const byCfg = {};
     for (const r of rows.filter((x) => !x.chords)) (byCfg[r.config] ??= []).push(r.f1);
     for (const [k, v] of Object.entries(byCfg)) console.log(`F1 medio ${k}: ${pct(v.reduce((a, b) => a + b) / v.length)}`);
+    const chordRows = rows.filter((x) => x.chords);
+    const chordAvg = chordRows.length ? chordRows.reduce((a, r) => a + r.chords.exact, 0) / chordRows.length : null;
+    if (chordAvg !== null) console.log(`Acordes exactos (media): ${pct(chordAvg)}`);
+    // Umbrales para CI: si la precisión baja de aquí, el deploy se bloquea.
+    const minF1 = Number(process.env.MIN_F1 || 0);
+    const minChords = Number(process.env.MIN_CHORDS || 0);
+    const bad = [];
+    for (const [k, v] of Object.entries(byCfg)) {
+      const avg = v.reduce((a, b) => a + b) / v.length;
+      if (avg < minF1) bad.push(`F1 ${k} ${pct(avg)} < ${pct(minF1)}`);
+    }
+    if (chordAvg !== null && chordAvg < minChords) bad.push(`acordes ${pct(chordAvg)} < ${pct(minChords)}`);
+    if (bad.length) {
+      console.error(`PRECISIÓN INSUFICIENTE: ${bad.join('; ')}`);
+      process.exitCode = 1;
+    }
   } finally {
     await browser.close();
     server.kill();

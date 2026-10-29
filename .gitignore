@@ -5,3 +5,4 @@ public/model
 .DS_Store
 eval/data
 .venv-local
+e2e-out
