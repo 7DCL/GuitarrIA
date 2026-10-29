@@ -16,6 +16,7 @@ export interface TranscribeOptions {
 
 /** Mezcla a mono y remuestrea a 22.05 kHz, que es lo que espera el modelo. */
 export async function toModelInput(buffer: AudioBuffer): Promise<AudioBuffer> {
+  if (buffer.sampleRate === MODEL_SR && buffer.numberOfChannels === 1) return buffer; // ya preparado
   const length = Math.ceil(buffer.duration * MODEL_SR);
   const ctx = new OfflineAudioContext(1, length, MODEL_SR);
   const src = ctx.createBufferSource();

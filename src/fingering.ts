@@ -38,7 +38,8 @@ export function groupNotes(notes: Note[], window = 0.05): Note[][] {
   const groups: Note[][] = [];
   for (const n of sorted) {
     const last = groups[groups.length - 1];
-    if (last && n.start - last[0].start <= window) last.push(n);
+    // Encadenado: un rasgueo de 6 cuerdas dura ~70 ms aunque cada cuerda llegue a 12 ms de la anterior.
+    if (last && n.start - last[last.length - 1].start <= window && n.start - last[0].start <= window * 2.5) last.push(n);
     else groups.push([n]);
   }
   return groups;
@@ -131,7 +132,8 @@ export function assignFingering(notes: Note[], options: FingeringOptions): Event
   let costs = layers[0].map((c) => c.cost);
   const back: number[][] = [layers[0].map(() => -1)];
   for (let i = 1; i < layers.length; i++) {
-    const gap = layers[i][0].notes[0].start - layers[i - 1][0].notes[0].start;
+    const first = (c: Candidate) => Math.min(...c.notes.map((n) => n.start));
+    const gap = first(layers[i][0]) - first(layers[i - 1][0]);
     const nextCosts: number[] = [];
     const nextBack: number[] = [];
     for (const cand of layers[i]) {

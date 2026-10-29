@@ -16,16 +16,18 @@ const CONFIGS = JSON.parse(process.env.CONFIGS || 'null') || [
   try {
     const page = await browser.newPage();
     page.on('pageerror', (e) => console.error('pageerror:', e.message));
-    await page.goto(`http://localhost:5199/eval/index.html?configs=${encodeURIComponent(JSON.stringify(CONFIGS))}`);
+    await page.goto(`http://localhost:5199/eval/index.html?only=${process.env.ONLY || ''}&configs=${encodeURIComponent(JSON.stringify(CONFIGS))}`);
     await page.waitForFunction(() => window.__result, null, { timeout: 600000 });
     const rows = await page.evaluate(() => window.__result);
     if (rows.error) throw new Error(rows.error);
     const pct = (x) => `${Math.round(x * 100)}%`.padStart(5);
     console.log('caso'.padEnd(24), 'config'.padEnd(16), 'cents', '   F1', ' prec', '  rec', ' notas');
-    for (const r of rows)
+    for (const r of rows.filter((x) => x.chords))
+      console.log(r.case.padEnd(24), r.config.padEnd(16), 'acordes exacto', pct(r.chords.exact), '· sin bajo', pct(r.chords.noBass), '· mayor/menor', pct(r.chords.majmin), '\n   ', r.chords.got);
+    for (const r of rows.filter((x) => !x.chords))
       console.log(r.case.padEnd(24), r.config.padEnd(16), String(r.cents).padStart(5), pct(r.f1), pct(r.precision), pct(r.recall), `${r.got}/${r.truth}`);
     const byCfg = {};
-    for (const r of rows) (byCfg[r.config] ??= []).push(r.f1);
+    for (const r of rows.filter((x) => !x.chords)) (byCfg[r.config] ??= []).push(r.f1);
     for (const [k, v] of Object.entries(byCfg)) console.log(`F1 medio ${k}: ${pct(v.reduce((a, b) => a + b) / v.length)}`);
   } finally {
     await browser.close();

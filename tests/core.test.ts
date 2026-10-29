@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { assignFingering, groupNotes, type Note } from '../src/fingering';
 import { toAsciiTab } from '../src/tab';
-import { detectChord, TUNINGS } from '../src/theory';
+import { TUNINGS } from '../src/theory';
 import { detectPitch } from '../src/pitch';
 import { parseYouTubeId } from '../src/player';
 import { cleanNotes } from '../src/cleanup';
@@ -52,16 +52,6 @@ describe('tab', () => {
     expect(lines[0]).toBe('e|-0---|');
     expect(lines[5]).toBe('E|---0-|');
   });
-});
-
-describe('acordes', () => {
-  it.each([
-    [[48, 52, 55], 'C'],
-    [[45, 52, 57, 60, 64], 'Am'],
-    [[43, 47, 50, 53], 'G7'],
-    [[40, 47], 'E5'],
-    [[52, 55, 60], 'C/E'],
-  ])('%j → %s', (midis, name) => expect(detectChord(midis)).toBe(name));
 });
 
 describe('afinador', () => {
@@ -124,6 +114,21 @@ describe('limpieza (modo punteo)', () => {
   it('descarta notas débiles y muy cortas', () => {
     const out = cleanNotes([n(0, 64, 1), n(0.5, 66, 0.1), n(1, 67, 0.9, 0.02)], { mode: 'lead' });
     expect(out.map((x) => x.midi)).toEqual([64]);
+  });
+
+  it('recupera la melodía cuando la frase baja de registro', () => {
+    const out = cleanNotes([72, 74, 76, 77, 79, 50, 52, 53].map((m, i) => n(i * 0.4, m)), { mode: 'lead' });
+    expect(out.map((x) => x.midi)).toEqual([72, 74, 76, 77, 79, 50, 52, 53]);
+  });
+
+  it('ignora el eco de la nota que sigue sonando y se queda con la nueva', () => {
+    const out = cleanNotes([n(0, 55, 0.8, 1), n(0.5, 55, 0.7), n(0.51, 60, 0.6)], { mode: 'lead' });
+    expect(out.map((x) => x.midi)).toEqual([55, 60]);
+  });
+
+  it('respeta la nota más grave de la afinación (bajo, Drop D)', () => {
+    const out = cleanNotes([28, 33, 38, 45].map((m, i) => n(i * 0.5, m)), { mode: 'lead', minMidi: 28 });
+    expect(out.map((x) => x.midi)).toEqual([28, 33, 38, 45]);
   });
 
   it('en modo acordes conserva las octavas', () => {

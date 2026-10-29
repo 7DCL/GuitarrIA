@@ -76,6 +76,42 @@ def backing(start=0.5, bars=4):
     return bass, chords
 
 
+VOICINGS = {
+    "C": [48, 52, 55, 60, 64], "G": [43, 47, 50, 55, 59, 67], "Am": [45, 52, 57, 60, 64],
+    "F": [41, 48, 53, 57, 60, 65], "Dm": [50, 57, 62, 65], "E7": [40, 47, 50, 56, 59, 64],
+    "Em": [40, 47, 52, 55, 59, 64], "D": [50, 57, 62, 66], "A7": [45, 52, 55, 61, 64],
+    "Cmaj7": [48, 52, 55, 59, 64], "Bm": [47, 54, 59, 62, 66], "Bdim": [47, 53, 59, 62],
+    "Dsus2": [50, 57, 62, 64], "Asus4": [45, 52, 57, 62, 64], "Am7": [45, 52, 55, 60, 64],
+    "Fmaj7": [53, 57, 60, 64], "C/E": [40, 48, 52, 55, 60, 64], "D/F#": [42, 50, 57, 62, 66],
+    "G7": [43, 47, 50, 55, 59, 65], "E": [40, 47, 52, 56, 59, 64], "A": [45, 52, 57, 61, 64],
+    "Bm7b5": [47, 53, 57, 62], "Bdim7": [47, 53, 56, 62], "C6": [48, 52, 57, 60, 64],
+    "Am6": [45, 52, 57, 60, 66], "Cadd9": [48, 52, 55, 62, 64], "A7sus4": [45, 52, 55, 62, 64],
+    "E9": [40, 47, 50, 56, 59, 66],
+}
+ROOTS = {"C": 48, "D": 50, "E": 40, "F": 41, "G": 43, "A": 45, "B": 47}
+
+
+def strum(prog, start=0.5, bar=2.0, pattern="DDUUDU", arpeggio=False):
+    """Rasguea (o arpegia) una progresión. Devuelve notas y segmentos de acordes verdaderos."""
+    notes, segs = [], []
+    for i, name in enumerate(prog):
+        t0 = start + i * bar
+        segs.append({"start": round(t0, 3), "end": round(t0 + bar, 3), "name": name})
+        v = VOICINGS[name]
+        if arpeggio:
+            order = v + v[-2:0:-1]
+            step = bar / 8
+            for k in range(8):
+                notes.append((t0 + k * step, order[k % len(order)], step * 2.5, 0.45))
+            continue
+        step = bar / len(pattern)
+        for k, d in enumerate(pattern):
+            strings = v if d == "D" else list(reversed(v[-4:]))
+            for j, m in enumerate(strings):
+                notes.append((t0 + k * step + j * 0.012, m, step * 1.6, (0.4 if d == "D" else 0.25) * rng.uniform(0.8, 1.1)))
+    return notes, segs
+
+
 def save(name, audio, truth, notes):
     peak = np.max(np.abs(audio)) or 1
     pcm = (audio / peak * 0.9 * 32767).astype("<i2")
@@ -106,6 +142,25 @@ def main():
 
     save("punteo_desafinado_-35c", render(solo, length, cents=-35), truth, solo)
     save("punteo_desafinado_+40c", render(solo, length, cents=40), truth, solo)
+
+    # Acordes: la verdad es la secuencia de acordes, no las notas.
+    chord_cases = {
+        "acordes_rasgueo": (["C", "G", "Am", "F", "Dm", "E7", "Am", "G"], {}),
+        "acordes_arpegio": (["Am", "C", "D", "F", "Em", "G", "Am", "E"], {"arpeggio": True}),
+        "acordes_variados": (["Cmaj7", "Am7", "Dsus2", "Asus4", "Fmaj7", "G7", "Bdim", "Bm"], {}),
+        "acordes_inversiones": (["C", "C/E", "F", "G", "D", "D/F#", "G", "A7"], {}),
+        "acordes_extendidos": (["Cadd9", "C6", "Am6", "Bm7b5", "E9", "A7sus4", "Bdim7", "Am"], {}),
+    }
+    for name, (prog, kw) in chord_cases.items():
+        notes, segs = strum(prog, **kw)
+        L = 0.5 + len(prog) * 2 + 1
+        audio = render(notes, L)
+        if name == "acordes_rasgueo":  # con bajo y melodía encima, como en una canción
+            bass = [(sg["start"] + k * 0.5, ROOTS[sg["name"][0]] - 12 if ROOTS[sg["name"][0]] >= 45 else ROOTS[sg["name"][0]], 0.45, 0.35)
+                    for sg in segs for k in range(4)]
+            audio = audio + render(bass, L)
+        save(name, audio, truth, [])
+        truth[-1]["chords"] = segs
 
     (OUT / "cases.json").write_text(json.dumps(truth, indent=1))
     print(f"{len(truth)} casos en {OUT}")

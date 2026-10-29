@@ -14,7 +14,7 @@ export interface Prepared {
 const SR = 22050;
 
 /** Filtra el audio antes de la IA: quita graves (zumbido), agudos sin guitarra y el ruido de fondo. */
-export async function denoise(buffer: AudioBuffer, level: NoiseLevel, rate = 1): Promise<AudioBuffer> {
+export async function denoise(buffer: AudioBuffer, level: NoiseLevel, rate = 1, lowCut = 70): Promise<AudioBuffer> {
   const length = Math.ceil((buffer.duration / rate) * SR);
   const ctx = new OfflineAudioContext(1, length, SR);
   const src = ctx.createBufferSource();
@@ -24,7 +24,7 @@ export async function denoise(buffer: AudioBuffer, level: NoiseLevel, rate = 1):
   if (level !== 'off') {
     const hp = ctx.createBiquadFilter();
     hp.type = 'highpass';
-    hp.frequency.value = 70; // por debajo del Mi grave (82 Hz) solo hay zumbido y golpes
+    hp.frequency.value = lowCut; // por debajo de la cuerda más grave solo hay zumbido y golpes
     const lp = ctx.createBiquadFilter();
     lp.type = 'lowpass';
     lp.frequency.value = level === 'strong' ? 4500 : 7000;
@@ -49,12 +49,15 @@ export function noiseGate(data: Float32Array, ratio: number, win = 512): void {
     for (let i = w * win; i < end; i++) s += data[i] * data[i];
     rms[w] = Math.sqrt(s / (end - w * win));
   }
-  const floor = [...rms].sort((a, b) => a - b)[Math.floor(n * 0.1)] || 0;
+  const sorted = [...rms].sort((a, b) => a - b);
+  const floor = sorted[Math.floor(n * 0.1)] || 0;
+  const mid = sorted[Math.floor(n * 0.5)] || 0;
+  // Sin silencios claros (el "suelo" se parece al volumen típico) no hay ruido que separar.
+  if (floor <= 0 || floor > mid * 0.5) return;
   const threshold = floor * ratio;
-  if (threshold <= 0) return;
   let gain = 1;
   for (let w = 0; w < n; w++) {
-    const target = rms[w] > threshold ? 1 : Math.max(0.05, rms[w] / threshold) ** 2;
+    const target = rms[w] > threshold ? 1 : Math.max(0.1, (rms[w] / threshold) ** 2); // como mucho −20 dB
     const end = Math.min(data.length, (w + 1) * win);
     for (let i = w * win; i < end; i++) {
       gain += (target - gain) * 0.01; // suavizado para no crear chasquidos
@@ -94,15 +97,20 @@ export function estimateCents(raw: RawOutput): number {
 /** Analiza el audio. Si está desafinado más de `tolerance` cents, lo corrige y vuelve a analizar. */
 export async function analyze(
   buffer: AudioBuffer,
-  opts: { noise: NoiseLevel; autoTune: boolean; tolerance?: number },
+  opts: { noise: NoiseLevel; autoTune: boolean; tolerance?: number; lowestMidi?: number },
   onProgress: (pct: number, label: string) => void,
 ): Promise<Prepared> {
-  const first = await runModel(await denoise(buffer, opts.noise), (p) => onProgress(p, 'Transcribiendo'));
+  // Corte de graves un poco por debajo de la cuerda más grave (Mi 82 Hz en guitarra, Mi 41 Hz en bajo).
+  const lowCut = Math.max(25, 440 * 2 ** (((opts.lowestMidi ?? 40) - 69) / 12) * 0.8);
+  let first: RawOutput | null = await runModel(await denoise(buffer, opts.noise, 1, lowCut), (p) => onProgress(p, 'Transcribiendo'));
   const cents = estimateCents(first);
   if (!opts.autoTune || Math.abs(cents) < (opts.tolerance ?? 20)) return { raw: first, rate: 1, cents };
+  first = null; // libera memoria antes de la segunda pasada
   // Reproducir más lento baja el tono: rate = 2^(-cents/1200) lleva la grabación a La 440.
   const rate = Math.pow(2, -cents / 1200);
-  const raw = await runModel(await denoise(buffer, opts.noise, rate), (p) => onProgress(p, `Corrigiendo afinación (${Math.round(cents)} cents)`));
+  const raw = await runModel(await denoise(buffer, opts.noise, rate, lowCut), (p) =>
+    onProgress(p, `Corrigiendo afinación (${Math.round(cents)} cents)`),
+  );
   return { raw, rate, cents };
 }
 
@@ -110,6 +118,7 @@ export interface NotesOptions {
   mode: Mode;
   sensitivity: number; // 0.2..0.8
   offset?: number; // segundos a restar (alineación con YouTube)
+  minMidi?: number; // nota más grave de la afinación (+ capo)
   clean?: Partial<CleanOptions>;
 }
 
@@ -121,5 +130,5 @@ export function toNotes(p: Prepared, opts: NotesOptions): Note[] {
   })
     .map((n) => ({ ...n, start: n.start * p.rate - (opts.offset ?? 0), duration: n.duration * p.rate }))
     .filter((n) => n.start >= 0);
-  return cleanNotes(notes, { ...opts.clean, mode: opts.mode });
+  return cleanNotes(notes, { minMidi: opts.minMidi, ...opts.clean, mode: opts.mode });
 }

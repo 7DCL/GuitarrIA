@@ -47,24 +47,49 @@ function mergeRepeats(notes: Note[]): Note[] {
 /** Deja una sola nota a la vez, siguiendo la línea melódica. */
 function monophonic(notes: Note[]): Note[] {
   const out: Note[] = [];
+  let pending: Note[][] = []; // grupos graves seguidos sin melodía en medio
   let i = 0;
   while (i < notes.length) {
     const group = [notes[i]];
     while (i + group.length < notes.length && notes[i + group.length].start - notes[i].start < 0.06)
       group.push(notes[i + group.length]);
     i += group.length;
-    const prev = out[out.length - 1];
-    // Notas muy por debajo de la melodía reciente son acompañamiento (bajo, acordes): se ignoran.
-    const recent = out.slice(-8).map((n) => n.midi).sort((a, b) => a - b);
-    const median = recent.length >= 4 ? recent[recent.length >> 1] : -Infinity;
-    const inRange = group.filter((n) => n.midi >= median - 10);
-    if (!inRange.length) continue;
-    const strong = inRange.filter((n) => n.velocity >= Math.max(...inRange.map((x) => x.velocity)) * 0.6);
-    // Sin contexto, la más aguda; si hay una melodía en curso, la que menos salta (más aguda si empatan).
+    const t = group[0].start;
+    let prev = out[out.length - 1];
+    // Registro de la melodía reciente (último segundo y medio). Muy por debajo = acompañamiento,
+    // salvo que la melodía lleve un rato sin aparecer: entonces es que la frase bajó de verdad.
+    const recent = out.filter((n) => t - n.start < 1.5).map((n) => n.midi).sort((a, b) => a - b);
+    const median = recent.length >= 3 ? recent[recent.length >> 1] : -Infinity;
+    let pool = group.filter((n) => n.midi >= median - 10);
+    if (!pool.length) {
+      pending.push(group);
+      // Tres grupos graves seguidos sin melodía: la frase bajó de verdad; se recuperan.
+      if (pending.length < 3) continue;
+      const back = pending.slice(0, -1);
+      pending = [];
+      for (const g of back) out.push({ ...g.sort((a, b) => b.velocity - a.velocity)[0] });
+      prev = out[out.length - 1];
+      pool = group;
+    } else {
+      // Si la melodía sigue justo donde iban esos graves, eran parte de la frase.
+      const last = pending[pending.length - 1];
+      if (last && pool.some((n) => last.some((m) => Math.abs(m.midi - n.midi) <= 7))) {
+        for (const g of pending) out.push({ ...g.sort((a, b) => b.velocity - a.velocity)[0] });
+        prev = out[out.length - 1];
+      }
+      pending = [];
+    }
+    // Una nota que ya sonaba y "vuelve a empezar" justo cuando entra otra es un eco del modelo.
+    const ringing = (n: Note) => prev && n.midi === prev.midi && prev.start + prev.duration > n.start;
+    const fresh = pool.filter((n) => !ringing(n));
+    if (fresh.length) pool = fresh;
+    const loud = Math.max(...pool.map((x) => x.velocity));
+    const strong = pool.filter((n) => n.velocity >= loud * 0.6);
+    // Sin contexto, la más aguda; con melodía en curso, la que menos salta (más aguda si empatan).
     const pick = strong.sort((a, b) =>
       prev ? Math.abs(a.midi - prev.midi) - Math.abs(b.midi - prev.midi) || b.midi - a.midi : b.midi - a.midi,
     )[0];
-    // Una nota que sigue sonando bajo la nueva se corta.
+    // La nota anterior se corta donde empieza la nueva.
     if (prev && prev.start + prev.duration > pick.start) prev.duration = pick.start - prev.start;
     out.push({ ...pick });
   }
@@ -75,7 +100,7 @@ export function cleanNotes(notes: Note[], opts: CleanOptions): Note[] {
   const lead = opts.mode === 'lead';
   const minVel = opts.minVelocity ?? (lead ? 0.3 : 0.2);
   const minDur = opts.minDuration ?? (lead ? 0.07 : 0.05);
-  const lo = opts.minMidi ?? (lead ? 40 : 28);
+  const lo = opts.minMidi ?? 28; // quien llama pasa la nota más grave de la afinación elegida
   const hi = opts.maxMidi ?? 88;
   const max = Math.max(0, ...notes.map((n) => n.velocity));
   let out = [...notes]

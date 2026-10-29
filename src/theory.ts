@@ -1,10 +1,33 @@
-// Teoría musical básica: nombres de notas, afinaciones y detección de acordes.
+// Teoría musical básica: nombres de notas y afinaciones.
 
 export const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
+const FLAT_NAMES = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
+const LATIN_SHARP = ['Do', 'Do#', 'Re', 'Re#', 'Mi', 'Fa', 'Fa#', 'Sol', 'Sol#', 'La', 'La#', 'Si'];
+const LATIN_FLAT = ['Do', 'Reb', 'Re', 'Mib', 'Mi', 'Fa', 'Solb', 'Sol', 'Lab', 'La', 'Sib', 'Si'];
+
+export type Notation = 'sharp' | 'flat' | 'latin' | 'latinFlat';
+let notation: Notation = 'sharp';
+
+/** Cambia cómo se escriben las notas en toda la app (C D E o Do Re Mi, sostenidos o bemoles). */
+export function setNotation(n: Notation): void {
+  notation = n;
+}
+
+export function pcName(pc: number, n: Notation = notation): string {
+  const i = ((pc % 12) + 12) % 12;
+  return { sharp: NOTE_NAMES, flat: FLAT_NAMES, latin: LATIN_SHARP, latinFlat: LATIN_FLAT }[n][i];
+}
+
 export function noteName(midi: number, withOctave = false): string {
-  const name = NOTE_NAMES[((midi % 12) + 12) % 12];
+  const name = pcName(midi);
   return withOctave ? `${name}${Math.floor(midi / 12) - 1}` : name;
+}
+
+/** Nombre de acorde con la notación elegida, p. ej. raíz 9 + 'm' + bajo 0 → "Am/C" o "Lam/Do". */
+export function chordName(root: number, quality: string, bass = root): string {
+  if (root < 0) return '–';
+  return pcName(root) + quality + (bass !== root && bass >= 0 ? `/${pcName(bass)}` : '');
 }
 
 export function midiToFreq(midi: number): number {
@@ -24,39 +47,3 @@ export const TUNINGS: Record<string, { label: string; strings: number[] }> = {
   openG: { label: 'Open G (D G D G B D)', strings: [38, 43, 50, 55, 59, 62] },
   bass4: { label: 'Bajo 4 cuerdas (E A D G)', strings: [28, 33, 38, 43] },
 };
-
-const CHORD_SHAPES: { suffix: string; intervals: number[] }[] = [
-  { suffix: '', intervals: [0, 4, 7] },
-  { suffix: 'm', intervals: [0, 3, 7] },
-  { suffix: '7', intervals: [0, 4, 7, 10] },
-  { suffix: 'maj7', intervals: [0, 4, 7, 11] },
-  { suffix: 'm7', intervals: [0, 3, 7, 10] },
-  { suffix: 'sus2', intervals: [0, 2, 7] },
-  { suffix: 'sus4', intervals: [0, 5, 7] },
-  { suffix: 'dim', intervals: [0, 3, 6] },
-  { suffix: 'aug', intervals: [0, 4, 8] },
-  { suffix: '5', intervals: [0, 7] },
-];
-
-/** Nombra un acorde a partir de sus notas MIDI. Devuelve null si no se reconoce. */
-export function detectChord(midis: number[]): string | null {
-  const pcs = [...new Set(midis.map((m) => ((m % 12) + 12) % 12))];
-  if (pcs.length < 2) return null;
-  const bass = ((Math.min(...midis) % 12) + 12) % 12;
-  let best: { name: string; score: number } | null = null;
-  for (const root of pcs) {
-    const rel = new Set(pcs.map((p) => (p - root + 12) % 12));
-    for (const shape of CHORD_SHAPES) {
-      if (!shape.intervals.every((i) => rel.has(i))) continue;
-      // Más notas cubiertas y menos notas sobrantes = mejor; preferir raíz en el bajo.
-      const extra = rel.size - shape.intervals.length;
-      const score = shape.intervals.length * 2 - extra * 3 + (root === bass ? 1 : 0);
-      if (extra > 1) continue;
-      if (!best || score > best.score) {
-        const slash = root !== bass ? `/${NOTE_NAMES[bass]}` : '';
-        best = { name: NOTE_NAMES[root] + shape.suffix + slash, score };
-      }
-    }
-  }
-  return best?.name ?? null;
-}
