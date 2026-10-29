@@ -10,17 +10,26 @@
   <body>
     <header class="top">
       <h1>🎸 GuitarrIA</h1>
-      <nav>
-        <button class="tab-btn active" data-view="transcribe">Transcribir</button>
-        <button class="tab-btn" data-view="tuner">Afinador</button>
+      <nav aria-label="Secciones">
+        <button class="tab-btn active" data-view="transcribe" aria-pressed="true">Transcribir</button>
+        <button class="tab-btn" data-view="tuner" aria-pressed="false">Afinador</button>
+        <label class="notation" title="Cómo se escriben las notas y los acordes">
+          <span class="sr-only">Notación</span>
+          <select id="notation" aria-label="Notación">
+            <option value="sharp">C D E (♯)</option>
+            <option value="flat">C D E (♭)</option>
+            <option value="latin">Do Re Mi (♯)</option>
+            <option value="latinFlat">Do Re Mi (♭)</option>
+          </select>
+        </label>
       </nav>
     </header>
 
     <main>
       <section id="view-transcribe" class="view">
         <form id="ytForm" class="yt-form">
-          <input id="ytUrl" type="url" placeholder="Pega un enlace de YouTube…" autocomplete="off" />
-          <button class="btn primary" type="submit">Cargar video</button>
+          <input id="ytUrl" type="text" inputmode="url" placeholder="Pega un enlace de YouTube…" autocomplete="off" aria-label="Enlace de YouTube" />
+          <button id="ytLoad" class="btn primary" type="submit">Cargar video</button>
         </form>
 
         <div id="ytPanel" class="yt-panel" hidden>
@@ -32,24 +41,30 @@
               <button id="ytStart" class="btn primary">🎧 Transcribir el video</button>
               <button id="ytStop" class="btn" hidden>■ Parar y transcribir lo escuchado</button>
             </div>
-            <p id="ytStatus" class="hint"></p>
-            <p id="localTip" class="local-tip">⚡ <strong>¿Sin esperar ni reproducir?</strong> Abre
-              <a id="localLink" href="#" rel="noopener">GuitarrIA Local</a> (Windows, gratis) y vuelve a pegar el enlace:
-              se transcribe en segundos.</p>
+            <p id="ytStatus" class="hint" role="status" aria-live="polite"></p>
+            <div id="localTip" class="local-tip">⚡ <strong>¿Sin esperar ni reproducir?</strong> Descarga
+              <a id="localLink" href="#" rel="noopener">GuitarrIA Local</a> (Windows, gratis), ábrelo y pulsa:
+              <button id="localUse" class="btn small" type="button">Ya lo tengo abierto</button>
+              <span class="hint">Se transcribe en segundos, sin reproducir el video.</span></div>
           </div>
         </div>
 
         <div id="drop" class="drop">
           <p><strong>Arrastra un audio</strong> (mp3, wav, ogg, m4a) o</p>
           <div class="row">
-            <label class="btn primary">Elegir archivo<input id="file" type="file" accept="audio/*,video/*" hidden /></label>
+            <button id="pick" class="btn primary" type="button">Elegir archivo</button>
+            <input id="file" type="file" accept="audio/*,video/*" hidden />
             <button id="record" class="btn">● Grabar con micrófono</button>
             <button id="demo" class="btn">Probar demo</button>
           </div>
           <p class="hint">Todo se procesa en tu equipo: nada se sube a ningún servidor. Funciona mejor con la guitarra sola.</p>
         </div>
 
-        <div id="progress" class="progress" hidden><div></div><span>Analizando…</span></div>
+        <div id="progressRow" class="progress-row" hidden>
+          <div id="progress" class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100"><div></div><span aria-live="polite">Analizando…</span></div>
+          <button id="cancel" class="btn small" type="button">Cancelar</button>
+        </div>
+        <p id="error" class="error" role="alert" hidden></p>
 
         <div id="workspace" hidden>
           <div class="settings">
@@ -60,7 +75,7 @@
               </select>
             </label>
             <label>Afinación <select id="tuning"></select></label>
-            <label>Capo <input id="capo" type="number" min="0" max="12" value="0" /></label>
+            <label>Capo <input id="capo" type="number" min="0" max="12" step="1" value="0" inputmode="numeric" /></label>
             <label title="Limpia zumbidos, siseo y ruido de fondo antes de transcribir">Filtro de ruido
               <select id="noise">
                 <option value="off" selected>Apagado</option>
@@ -68,49 +83,77 @@
                 <option value="strong">Fuerte</option>
               </select>
             </label>
-            <label>Sensibilidad <input id="sens" type="range" min="0.2" max="0.8" step="0.05" value="0.4" /></label>
+            <label title="Más alto: detecta notas suaves (y también más errores). Más bajo: solo las notas claras.">Sensibilidad
+              <input id="sens" type="range" min="0.2" max="0.8" step="0.05" value="0.4" /> <span id="sensVal" class="hint">40%</span></label>
             <span id="tuneInfo" class="hint"></span>
             <label><input id="names" type="checkbox" /> Ver nombres de nota</label>
           </div>
 
           <div class="player">
-            <button id="play" class="btn primary">▶</button>
+            <button id="play" class="btn primary" aria-label="Reproducir (espacio)">▶</button>
             <span id="clock">0:00 / 0:00</span>
-            <input id="seek" type="range" min="0" max="1" step="0.01" value="0" />
+            <input id="seek" type="range" min="0" max="1" step="0.01" value="0" aria-label="Posición" />
             <label>Velocidad
               <select id="rate">
-                <option value="0.25">25%</option><option value="0.5">50%</option><option value="0.75">75%</option>
-                <option value="0.9">90%</option><option value="1" selected>100%</option>
+                <option value="0.25">25%</option><option value="0.5">50%</option><option value="0.6">60%</option>
+                <option value="0.7">70%</option><option value="0.75">75%</option><option value="0.8">80%</option>
+                <option value="0.9">90%</option><option value="1" selected>100%</option><option value="1.25">125%</option>
               </select>
             </label>
-            <button id="loopA" class="btn small">A</button>
-            <button id="loopB" class="btn small">B</button>
-            <button id="loopClear" class="btn small">✕ bucle</button>
+            <button id="loopA" class="btn small" title="Inicio del bucle (tecla A)" aria-label="Marcar inicio del bucle">A</button>
+            <button id="loopB" class="btn small" title="Fin del bucle (tecla B)" aria-label="Marcar fin del bucle">B</button>
+            <button id="loopClear" class="btn small" title="Quitar bucle (Esc)">✕ bucle</button>
             <label title="Sube un 5% la velocidad en cada vuelta del bucle"><input id="ramp" type="checkbox" /> Práctica progresiva</label>
             <label>Original <input id="volAudio" type="range" min="0" max="1" step="0.05" value="1" /></label>
             <label>Sintetizado <input id="volSynth" type="range" min="0" max="1" step="0.05" value="0" /></label>
           </div>
 
-          <div class="chord-bar"><span class="label">Acorde</span><span id="chord">–</span><span id="loopInfo"></span></div>
-          <canvas id="fretboard"></canvas>
-          <div id="tab" class="tab"></div>
+          <div class="chord-panel">
+            <div class="chord-now">
+              <div id="chordDiagram" class="chord-diagram" aria-hidden="true"></div>
+              <div>
+                <span class="label">Acorde</span>
+                <div id="chord" aria-live="off">–</div>
+                <div class="hint">Siguiente: <strong id="chordNext">–</strong></div>
+                <div id="chordCapo" class="hint"></div>
+              </div>
+            </div>
+            <div class="chord-list-wrap">
+              <span class="label">Acordes del tema <span class="hint">(pulsa uno para ir a donde suena)</span></span>
+              <div id="chordList" class="chord-list"></div>
+            </div>
+            <span id="loopInfo" class="loop-info" aria-live="polite"></span>
+          </div>
+          <canvas id="fretboard" role="img" aria-label="Diapasón con las notas que suenan"></canvas>
+          <div id="tab" class="tab" role="list" aria-label="Tablatura: pulsa una columna para saltar a ella"></div>
 
           <div class="row exports">
             <button id="expTxt" class="btn small">Descargar tab (.txt)</button>
             <button id="expMid" class="btn small">Descargar MIDI</button>
             <button id="expJson" class="btn small">Descargar proyecto (.json)</button>
-            <label class="btn small">Abrir proyecto<input id="impJson" type="file" accept=".json" hidden /></label>
+            <button id="impBtn" class="btn small" type="button">Abrir proyecto</button>
+            <input id="impJson" type="file" accept=".json,application/json" hidden />
           </div>
         </div>
       </section>
 
       <section id="view-tuner" class="view" hidden>
         <div class="tuner">
-          <div id="tunerNote" class="tuner-note">–</div>
-          <div class="meter"><div id="needle" class="needle"></div><div class="center"></div></div>
-          <div id="tunerInfo" class="hint">Pulsa empezar y toca una cuerda</div>
-          <button id="tunerStart" class="btn primary">Empezar afinador</button>
-          <div id="tunerStrings" class="row"></div>
+          <div class="tuner-settings">
+            <label>Afinación <select id="tunerTuning"></select></label>
+            <label title="Frecuencia del La de referencia">La = <input id="a4" type="number" min="415" max="466" step="1" value="440" inputmode="numeric" /> Hz</label>
+          </div>
+          <div id="tunerStrings" class="tuner-strings" role="group" aria-label="Cuerdas: pulsa una para fijarla y oír su nota"></div>
+          <div class="tuner-display" aria-live="polite">
+            <div id="tunerNote" class="tuner-note idle">–</div>
+            <div id="tunerCents" class="tuner-cents">&nbsp;</div>
+          </div>
+          <div class="meter" aria-hidden="true">
+            <div class="ticks"></div><div class="zone"></div><div class="center"></div><div id="needle" class="needle"></div>
+          </div>
+          <div class="meter-labels" aria-hidden="true"><span>♭ grave</span><span>afinada</span><span>agudo ♯</span></div>
+          <div id="tunerInfo" class="hint" role="status">Pulsa empezar y toca una cuerda al aire</div>
+          <button id="tunerStart" class="btn primary">🎤 Empezar afinador</button>
         </div>
       </section>
     </main>
