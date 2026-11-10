@@ -82,7 +82,14 @@ async function main() {
     const cache = new Map<string, Awaited<ReturnType<typeof analyze>>>();
     for (const cfg of configs) {
       const key = `${cfg.noise}|${cfg.autoTune}`;
-      if (!cache.has(key)) cache.set(key, await analyze(buffer, cfg, () => {}));
+      if (!cache.has(key)) {
+        try {
+          cache.set(key, await analyze(buffer, cfg, () => {}));
+        } catch (e) {
+          console.warn(`${c.name}: la IA falló (${e})`);
+          break;
+        }
+      }
       const prepared = cache.get(key)!;
       if (c.chords) {
         rows.push({ case: c.name, config: cfg.label, cents: Math.round(prepared.cents), chords: chordScore(c.chords, prepared.raw.frames, prepared.raw.onsets, prepared.rate, cfg.chord) });

@@ -12,7 +12,8 @@ const CONFIGS = JSON.parse(process.env.CONFIGS || 'null') || [
 (async () => {
   const server = spawn('npx', ['vite', '--port', '5199', '--strictPort'], { stdio: 'ignore' });
   await new Promise((r) => setTimeout(r, 2500));
-  const browser = await chromium.launch();
+  // Sin GPU (CI): WebGL por software para que la IA corra igual que en un navegador normal.
+  const browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--ignore-gpu-blocklist'] });
   try {
     const page = await browser.newPage();
     page.on('pageerror', (e) => console.error('pageerror:', e.message));
