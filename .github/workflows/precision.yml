@@ -30,7 +30,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm ci && node scripts/copy-model.mjs
       - run: npx playwright install --with-deps chromium
       - uses: actions/cache@v4
         with:

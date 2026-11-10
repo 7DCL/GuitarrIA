@@ -1,9 +1,9 @@
 import { Midi } from '@tonejs/midi';
-import { chordAt, detectChords, framesFromNotes, type ChordSegment } from './chords';
+import { chordAt, detectChords, framesFromNotes, QUALITIES, type ChordSegment } from './chords';
 import type { Mode } from './cleanup';
 import { assignFingering, type Event, type Note } from './fingering';
 import { drawFretboard } from './fretboard';
-import { downloadWithLocal, localAvailable, localOptedIn, setLocalOptIn, LOCAL_DOWNLOAD } from './local';
+import { downloadWithLocal, localInfo, localOptedIn, separateWithLocal, setLocalOptIn, LOCAL_DOWNLOAD, LOCAL_PRO_DOWNLOAD, type LocalInfo } from './local';
 import { AudioPlayer, ClockPlayer, YouTubePlayer, captureTabAudio, parseYouTubeId, type Player } from './player';
 import { pluck, renderDemo } from './synth';
 import { stringLabels, toAsciiTab } from './tab';
@@ -222,6 +222,20 @@ const ytStop = $<HTMLButtonElement>('ytStop');
 let capture: { startedAt: number; stop: () => Promise<Blob>; yt: YouTubePlayer } | null = null;
 let ytOffset: number | null = null;
 $<HTMLAnchorElement>('localLink').href = LOCAL_DOWNLOAD;
+$<HTMLAnchorElement>('localProLink').href = LOCAL_PRO_DOWNLOAD;
+
+// ---------- GuitarrIA Local Pro: aislar la guitarra ----------
+const isolateInput = $<HTMLInputElement>('isolate');
+let local: LocalInfo | null = null;
+isolateInput.checked = store.get('isolate') !== '0';
+isolateInput.addEventListener('change', () => store.set('isolate', isolateInput.checked ? '1' : '0'));
+async function refreshLocal(): Promise<LocalInfo | null> {
+  local = localOptedIn() ? await localInfo() : null;
+  $('isolateRow').hidden = !local?.separate;
+  return local;
+}
+const wantIsolate = () => !!local?.separate && isolateInput.checked;
+refreshLocal();
 
 function dropYouTube() {
   if (player instanceof ClockPlayer) player.destroy();
@@ -287,7 +301,7 @@ function showCapture(yt: YouTubePlayer | Error | null) {
 
 /** Baja el audio con GuitarrIA Local y lo transcribe. Devuelve false si no está disponible o falla. */
 async function tryLocal(id: string, ytPromise: Promise<YouTubePlayer | Error | null>): Promise<boolean> {
-  if (!(await localAvailable())) {
+  if (!(await refreshLocal())) {
     ytStatus.textContent = 'No encuentro GuitarrIA Local: ¿está abierta su ventana? Mientras tanto puedes transcribirlo escuchándolo.';
     return false;
   }
@@ -297,14 +311,20 @@ async function tryLocal(id: string, ytPromise: Promise<YouTubePlayer | Error | n
   try {
     const { blob, title } = await downloadWithLocal(
       id,
-      (f) => my === generation && setProgress(f < 0 ? null : f, f < 0 ? 'GuitarrIA Local está bajando el audio…' : `Recibiendo audio… ${Math.round(f * 100)}%`),
+      (f) =>
+        my === generation &&
+        setProgress(
+          f < 0 ? null : f,
+          f >= 0 ? `Recibiendo audio… ${Math.round(f * 100)}%` : wantIsolate() ? 'GuitarrIA Local está bajando el audio y aislando la guitarra (1-3 min)…' : 'GuitarrIA Local está bajando el audio…',
+        ),
       abortLocal.signal,
+      wantIsolate(),
     );
     if (my !== generation) return true;
     const yt = await ytPromise;
     if (my !== generation || ytId !== id) return true;
     // Si YouTube no deja incrustar el video, se toca el audio descargado.
-    await loadBlob(blob, title, yt instanceof YouTubePlayer ? yt : undefined, 0, my);
+    await loadBlob(blob, title, yt instanceof YouTubePlayer ? yt : undefined, 0, my, true);
     if (!(yt instanceof YouTubePlayer)) $('ytPanel').hidden = true;
     return true;
   } catch (err) {
@@ -318,6 +338,7 @@ async function tryLocal(id: string, ytPromise: Promise<YouTubePlayer | Error | n
 
 $('localUse').addEventListener('click', async () => {
   setLocalOptIn(true);
+  await refreshLocal();
   if (!ytId) return;
   ytStatus.textContent = '';
   const id = ytId;
@@ -379,14 +400,27 @@ async function finishCapture(transcribe: boolean) {
 
 /** Transcribe un audio. Si viene de YouTube, se reproduce con el video en vez de con el archivo. */
 let objectUrl: string | null = null;
-async function loadBlob(blob: Blob, name: string, source?: YouTubePlayer, offset = 0, my = ++generation) {
+async function loadBlob(blob: Blob, name: string, source?: YouTubePlayer, offset = 0, my = ++generation, separated = false) {
   player.pause();
   showError(null);
   setBusy(true);
+  // Con GuitarrIA Local Pro se transcribe solo la guitarra (se sigue escuchando el audio original).
+  let analysisBlob = blob;
+  if (!separated && !source && wantIsolate()) {
+    setProgress(null, 'GuitarrIA Local está aislando la guitarra (1-3 min)…');
+    abortLocal = new AbortController();
+    try {
+      analysisBlob = await separateWithLocal(blob, abortLocal.signal);
+    } catch (err) {
+      if (my !== generation || (err as Error).name === 'AbortError') return;
+      showError(`No se pudo aislar la guitarra (${(err as Error).message}); se transcribe el audio completo.`);
+    }
+    if (my !== generation) return;
+  }
   setProgress(0, 'Decodificando audio…');
   let buffer: AudioBuffer;
   try {
-    buffer = await audioCtx().decodeAudioData(await blob.arrayBuffer());
+    buffer = await audioCtx().decodeAudioData(await analysisBlob.arrayBuffer());
   } catch (err) {
     console.error(err);
     if (my === generation) {
@@ -520,7 +554,7 @@ function renderTab() {
     const seg = state.chordStarts[i];
     const desc = ev.notes.map((n) => `cuerda ${tuning.length - n.string} traste ${n.fret}`).join(', ');
     cols.push(
-      `<div class="col" role="listitem" tabindex="-1" data-i="${i}" aria-label="${formatTime(ev.start)}: ${desc}"><div class="ch">${seg ? segName(seg) : ''}</div>${cells}</div>`,
+      `<div class="col" role="listitem" tabindex="-1" data-i="${i}" aria-label="${formatTime(ev.start)}: ${desc}"><div class="ch${seg?.edited ? ' edited' : ''}"${seg ? ' title="Pulsa para corregir"' : ''}>${seg ? segName(seg) : ''}</div>${cells}</div>`,
     );
   });
   tabEl.innerHTML = cols.join('');
@@ -531,6 +565,9 @@ function renderTab() {
 
 tabEl.addEventListener('click', (e) => {
   const col = (e.target as HTMLElement).closest<HTMLElement>('.col[data-i]');
+  // Pulsar el nombre del acorde encima de la tab abre el corrector.
+  const seg = col && (e.target as HTMLElement).closest('.ch') ? state.chordStarts[Number(col.dataset.i)] : null;
+  if (seg) return openChordEditor(seg);
   if (col) seek(state.events[Number(col.dataset.i)].start - 0.05);
 });
 // Con el teclado: ← → recorren las columnas de la tab, Intro salta a la elegida.
@@ -575,6 +612,68 @@ $('chordList').addEventListener('click', (e) => {
   const t = player.time;
   seek((segs.find((s) => s.start > t + 0.1) ?? segs[0]).start);
 });
+
+// ---------- Corregir acordes ----------
+const dialog = $<HTMLDialogElement>('chordDialog');
+const edRoot = $<HTMLSelectElement>('edRoot');
+const edQuality = $<HTMLSelectElement>('edQuality');
+const edBass = $<HTMLSelectElement>('edBass');
+const QUALITY_LABELS: Record<string, string> = {
+  '': 'Mayor', m: 'Menor', '7': '7 (dominante)', maj7: 'maj7', m7: 'm7', sus2: 'sus2', sus4: 'sus4', dim: 'Disminuido',
+  aug: 'Aumentado', '5': '5 (quinta)', m7b5: 'm7♭5 (semidisminuido)', dim7: 'dim7', '6': '6', m6: 'm6', add9: 'add9',
+  '7sus4': '7sus4', '9': '9',
+};
+let editing: ChordSegment | null = null;
+
+function fillNoteSelect(sel: HTMLSelectElement, first?: string) {
+  sel.innerHTML = (first ? `<option value="-1">${first}</option>` : '') + Array.from({ length: 12 }, (_, i) => `<option value="${i}">${chordName(i, '')}</option>`).join('');
+}
+
+function openChordEditor(seg: ChordSegment | null) {
+  if (!seg) return;
+  editing = seg;
+  player.pause();
+  fillNoteSelect(edRoot, 'Sin acorde');
+  fillNoteSelect(edBass, 'La misma nota');
+  edQuality.innerHTML = QUALITIES.map((q) => `<option value="${q.suffix}">${QUALITY_LABELS[q.suffix] ?? q.suffix}</option>`).join('');
+  edRoot.value = String(seg.root);
+  edQuality.value = seg.quality;
+  edBass.value = String(seg.bass === seg.root ? -1 : seg.bass);
+  $('chordDialogWhen').textContent = `(${formatTime(Math.max(0, seg.start), true)})`;
+  $('edOld').textContent = seg.root >= 0 ? segName(seg) : 'este tramo';
+  $('edAll').parentElement!.hidden = seg.root < 0;
+  previewEdit();
+  dialog.showModal();
+}
+
+function previewEdit() {
+  const root = Number(edRoot.value);
+  edQuality.disabled = edBass.disabled = root < 0;
+  const bass = Number(edBass.value) < 0 ? root : Number(edBass.value);
+  const k = capo();
+  const shape = (x: number) => (((x - k) % 12) + 12) % 12;
+  const v = root >= 0 ? findVoicing(shape(root), edQuality.value, shape(bass), currentTuning()) : null;
+  $('edPreview').innerHTML = v ? voicingSvg(v, chordName(shape(root), edQuality.value, shape(bass))) : '';
+}
+[edRoot, edQuality, edBass].forEach((el) => el.addEventListener('change', previewEdit));
+
+dialog.addEventListener('close', () => {
+  const seg = editing;
+  editing = null;
+  if (!seg || dialog.returnValue !== 'ok') return;
+  const root = Number(edRoot.value);
+  const quality = root < 0 ? '' : edQuality.value;
+  const bass = root < 0 ? -1 : Number(edBass.value) < 0 ? root : Number(edBass.value);
+  const old = segName(seg);
+  const targets =
+    seg.root >= 0 && $<HTMLInputElement>('edAll').checked ? state.chords.filter((s) => s.root >= 0 && segName(s) === old) : [seg];
+  for (const s of targets) Object.assign(s, { root, quality, bass, name: root < 0 ? 'N' : chordName(root, quality, bass), edited: true });
+  refreshFingering();
+  renderChordList();
+  state.chordShown = undefined;
+});
+
+$('chordEdit').addEventListener('click', () => openChordEditor(chordAt(state.chords, player.time)));
 
 function showChord(t: number) {
   const seg = chordAt(state.chords, t);

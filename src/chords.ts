@@ -10,6 +10,7 @@ export interface ChordSegment {
   root: number; // 0..11, -1 si 'N'
   quality: string;
   bass: number; // clase de nota del bajo
+  edited?: boolean; // corregido a mano por el usuario
 }
 
 interface Quality {
@@ -130,7 +131,8 @@ export interface ChordOptions {
   bassWeight?: number; // cuánto pesa la nota del bajo
   bassMemory?: number; // 0..1: cuánto se recuerda el bajo entre ventanas
   keyWeight?: number; // cuánto se castigan los acordes fuera de la tonalidad (0 = no se usa)
-  beatWeight?: number; // 0..1: cuánto más fácil es cambiar de acorde en un pulso (0 = no se usa)
+  beatWeight?: number; // cuánto más caro es cambiar de acorde fuera de un pulso (0 = no se usa)
+  beatSnap?: number; // segundos: los cambios de acorde se mueven al pulso más cercano dentro de este margen
   onsets?: number[][]; // ataques de la IA (frames × 88), para el pulso; si faltan se estiman
 }
 
@@ -278,6 +280,7 @@ export function detectChords(frames: number[][], options: ChordOptions = {}): Ch
     bassMemory: 0.8,
     keyWeight: 0,
     beatWeight: 0,
+    beatSnap: 0,
     onsets: [],
     ...options,
   };
@@ -291,7 +294,8 @@ export function detectChords(frames: number[][], options: ChordOptions = {}): Ch
   );
   const per = Math.max(1, Math.round(HOP * FPS));
   const onBeat = new Uint8Array(wins.length);
-  if (o.beatWeight > 0) for (const b of detectBeats(frames, o.onsets.length ? o.onsets : undefined)) onBeat[Math.min(wins.length - 1, Math.floor(b / per))] = 1;
+  const beats = o.beatWeight > 0 || o.beatSnap > 0 ? detectBeats(frames, o.onsets.length ? o.onsets : undefined) : [];
+  if (o.beatWeight > 0) for (const b of beats) onBeat[Math.min(wins.length - 1, Math.floor(b / per))] = 1;
   const hasBeats = onBeat.some((x) => x);
   if (o.smoothing > 0) {
     // Integrador con fuga: cada ventana recuerda parte de las anteriores.
@@ -314,7 +318,7 @@ export function detectChords(frames: number[][], options: ChordOptions = {}): Ch
   wins.forEach((w, i) => {
     const s = silence(w) ? new Array(nT).fill(-1) : scores(w, o).map((v, j) => v - keyPenalty[j]);
     // En un pulso cambiar de acorde es más barato; entre pulsos, más caro.
-    const penalty = hasBeats ? changePenalty * (onBeat[i] ? 1 - o.beatWeight : 1 + o.beatWeight) : changePenalty;
+    const penalty = hasBeats && !onBeat[i] ? changePenalty * (1 + o.beatWeight) : changePenalty;
     const sN = silence(w) ? 1 : 0.35; // 'N' gana solo si apenas suena nada
     const cur = new Float64Array(nT + 1);
     const bp = new Int32Array(nT + 1);
@@ -382,6 +386,16 @@ export function detectChords(frames: number[][], options: ChordOptions = {}): Ch
       if (sg.end - sg.start > last.end - last.start) last.bass = sg.bass;
       last.end = sg.end;
     } else merged.push({ ...sg });
+  }
+  // Los cambios de acorde caen en el pulso: cada frontera se mueve al pulso más cercano si está cerca.
+  if (o.beatSnap > 0 && beats.length > 4) {
+    const times = beats.map((b) => (b / FPS) * timeScale - o.offset);
+    for (let i = 1; i < merged.length; i++) {
+      const t = merged[i].start;
+      let near = times[0];
+      for (const x of times) if (Math.abs(x - t) < Math.abs(near - t)) near = x;
+      if (Math.abs(near - t) <= o.beatSnap && near > merged[i - 1].start + 0.1 && near < merged[i].end - 0.1) merged[i].start = merged[i - 1].end = near;
+    }
   }
   for (const sg of merged)
     if (sg.root >= 0 && sg.bass !== sg.root) sg.name = `${NOTE_NAMES[sg.root]}${sg.quality}/${NOTE_NAMES[sg.bass]}`;

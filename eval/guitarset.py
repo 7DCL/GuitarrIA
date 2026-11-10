@@ -50,6 +50,7 @@ def main():
     audio_names = {Path(n).name: n for n in audio.namelist() if n.endswith(".wav")}
     cases = []
     skipped = 0
+    unknown = set()
     for name in sorted(ann.namelist()):
         stem = Path(name).stem
         if not name.endswith(".jams") or stem[:2] not in players:
@@ -73,6 +74,7 @@ def main():
                 n = chord_name(d["value"])
                 if n is None:
                     skipped += 1
+                    unknown.add(d["value"])
                     continue
                 chords.append({"start": round(d["time"], 3), "end": round(d["time"] + d["duration"], 3), "name": n})
             case["chords"] = chords
@@ -80,7 +82,7 @@ def main():
         cases.append(case)
     (out / "cases.json").write_text(json.dumps(cases))
     comp = sum(1 for c in cases if "chords" in c)
-    print(f"{len(cases)} casos ({comp} de acordes, {len(cases) - comp} de punteo); {skipped} acordes sin equivalente omitidos")
+    print(f"{len(cases)} casos ({comp} de acordes, {len(cases) - comp} de punteo); {skipped} acordes sin equivalente omitidos: {sorted(unknown)[:20]}")
 
 
 if __name__ == "__main__":

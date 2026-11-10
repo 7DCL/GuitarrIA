@@ -22,13 +22,32 @@ export function setLocalOptIn(on: boolean): void {
   }
 }
 
-export async function localAvailable(): Promise<boolean> {
+export const LOCAL_PRO_DOWNLOAD = 'https://github.com/7DCL/GuitarrIA/releases/download/local/GuitarrIA-Local-Pro.zip';
+
+export interface LocalInfo {
+  ok: boolean;
+  separate: boolean; // versión Pro: puede aislar la guitarra
+}
+
+export async function localInfo(): Promise<LocalInfo | null> {
   try {
     const res = await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(1200) });
-    return res.ok && (await res.json()).ok === true;
+    const data = res.ok ? await res.json() : null;
+    return data?.ok === true ? { ok: true, separate: data.separate === true } : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+export async function localAvailable(): Promise<boolean> {
+  return (await localInfo()) !== null;
+}
+
+/** Manda un audio a GuitarrIA Local Pro y devuelve solo la guitarra (wav). */
+export async function separateWithLocal(blob: Blob, signal?: AbortSignal): Promise<Blob> {
+  const res = await fetch(`${BASE}/separate`, { method: 'POST', body: blob, headers: { 'Content-Type': 'application/octet-stream' }, signal });
+  if (!res.ok) throw new Error((await res.json().catch(() => null))?.error ?? `Error ${res.status}`);
+  return res.blob();
 }
 
 /** Baja el audio del video. `onProgress` recibe 0..1 cuando el tamaño es conocido, o -1 mientras YouTube responde. */
@@ -36,9 +55,10 @@ export async function downloadWithLocal(
   videoId: string,
   onProgress?: (fraction: number) => void,
   signal?: AbortSignal,
+  isolate = false,
 ): Promise<{ blob: Blob; title: string }> {
   onProgress?.(-1);
-  const res = await fetch(`${BASE}/audio?id=${encodeURIComponent(videoId)}`, { signal });
+  const res = await fetch(`${BASE}/audio?id=${encodeURIComponent(videoId)}${isolate ? '&stem=guitar' : ''}`, { signal });
   if (!res.ok) {
     const msg = (await res.json().catch(() => null))?.error ?? `Error ${res.status}`;
     throw new Error(/confirm you.re not a bot|Sign in/i.test(msg) ? 'YouTube pidió verificación. Prueba de nuevo en unos minutos.' : msg);
