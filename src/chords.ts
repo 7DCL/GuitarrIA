@@ -272,9 +272,9 @@ export function detectChords(frames: number[][], options: ChordOptions = {}): Ch
   const o: Required<ChordOptions> = {
     timeScale: 1,
     offset: 0,
-    // Valores elegidos con eval/ (scripts/eval.cjs, casos acordes_*).
-    changePenalty: 0.35,
-    smoothing: 0.5,
+    // Valores elegidos con grabaciones reales (GuitarSet, guitarristas 00 y 01) sin empeorar eval/ sintético.
+    changePenalty: 0.8,
+    smoothing: 0.3,
     priorScale: 0.3,
     bassWeight: 0.08,
     bassMemory: 0.8,
