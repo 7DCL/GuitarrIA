@@ -269,11 +269,13 @@ async function noErrors(page) {
     await check('GuitarrIA Local Pro: aísla la guitarra en videos y archivos subidos', async () => {
       const page = await newPage(browser, { local: 'pro', init: () => localStorage.setItem('guitarria.local', '1') });
       await page.waitForSelector('#isolateRow:not([hidden])', { timeout: 5000 });
-      assert(await page.isChecked('#isolate'), 'aislar la guitarra debería venir activado');
+      assert(!(await page.isChecked('#isolate')), 'aislar la guitarra (experimental) debería venir apagado');
+      await page.check('#isolate');
       await page.fill('#ytUrl', 'https://youtu.be/dQw4w9WgXcQ');
       await page.click('#ytLoad');
       await page.waitForSelector('#workspace:not([hidden])', { timeout: 180000 });
       assert(page.stems === 1, 'el video no se pidió con la guitarra aislada');
+      assert((await page.evaluate(() => !!window.__guitarria.state.chordPrepared)), 'los acordes no salen del audio completo');
       const file = path.join(os.tmpdir(), 'guitarria-tema.wav');
       fs.writeFileSync(file, melodyWav);
       await page.setInputFiles('#file', file);

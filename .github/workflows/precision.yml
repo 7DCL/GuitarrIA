@@ -49,7 +49,7 @@ jobs:
             [ -s "gs-zips/$f" ] || curl -sSfL --retry 3 -o "gs-zips/$f" "https://zenodo.org/records/3371780/files/$f?download=1"
           done
           ls -la gs-zips
-      - run: python3 eval/guitarset.py gs-zips "${{ inputs.players || '00' }}"
+      - run: pip install soundfile numpy && python3 eval/guitarset.py gs-zips "${{ inputs.players || '00' }}"
       - name: Evaluar
         env:
           DATA: data-gs

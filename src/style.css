@@ -196,3 +196,4 @@ nav { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .chord-dialog form { display: grid; gap: 12px; }
 .ed-preview { margin: 0 auto; }
 .isolate { display: block; margin: -4px 0 12px; font-size: 14px; }
+.key-info { color: var(--text); margin: 0 6px; }

@@ -1,5 +1,5 @@
 import { Midi } from '@tonejs/midi';
-import { chordAt, detectChords, framesFromNotes, QUALITIES, type ChordSegment } from './chords';
+import { chordAt, chromagram, detectChords, detectKey, framesFromNotes, QUALITIES, type ChordSegment } from './chords';
 import type { Mode } from './cleanup';
 import { assignFingering, type Event, type Note } from './fingering';
 import { drawFretboard } from './fretboard';
@@ -38,6 +38,8 @@ const state = {
   name: 'cancion',
   buffer: null as AudioBuffer | null,
   prepared: null as Prepared | null,
+  chordBuffer: null as AudioBuffer | null, // audio completo para los acordes cuando la tab sale de la guitarra aislada
+  chordPrepared: null as Prepared | null,
   analyzedLowest: 40, // nota más grave usada para filtrar el audio en el último análisis
   offset: 0, // segundos entre el inicio de la grabación y el segundo 0 del video
   notes: [] as Note[],
@@ -227,7 +229,7 @@ $<HTMLAnchorElement>('localProLink').href = LOCAL_PRO_DOWNLOAD;
 // ---------- GuitarrIA Local Pro: aislar la guitarra ----------
 const isolateInput = $<HTMLInputElement>('isolate');
 let local: LocalInfo | null = null;
-isolateInput.checked = store.get('isolate') !== '0';
+isolateInput.checked = store.get('isolate') === '1'; // experimental: apagado salvo que el usuario lo active
 isolateInput.addEventListener('change', () => store.set('isolate', isolateInput.checked ? '1' : '0'));
 async function refreshLocal(): Promise<LocalInfo | null> {
   local = localOptedIn() ? await localInfo() : null;
@@ -309,22 +311,26 @@ async function tryLocal(id: string, ytPromise: Promise<YouTubePlayer | Error | n
   setBusy(true);
   abortLocal = new AbortController();
   try {
+    const isolate = wantIsolate();
     const { blob, title } = await downloadWithLocal(
       id,
       (f) =>
         my === generation &&
         setProgress(
           f < 0 ? null : f,
-          f >= 0 ? `Recibiendo audio… ${Math.round(f * 100)}%` : wantIsolate() ? 'GuitarrIA Local está bajando el audio y aislando la guitarra (1-3 min)…' : 'GuitarrIA Local está bajando el audio…',
+          f >= 0 ? `Recibiendo audio… ${Math.round(f * 100)}%` : isolate ? 'GuitarrIA Local está bajando el audio y aislando la guitarra (1-3 min)…' : 'GuitarrIA Local está bajando el audio…',
         ),
       abortLocal.signal,
-      wantIsolate(),
+      isolate,
     );
+    if (my !== generation) return true;
+    // Con la guitarra aislada también hace falta el tema completo (para los acordes): ya está en la caché de Local.
+    const full = isolate ? (await downloadWithLocal(id, undefined, abortLocal.signal, false)).blob : blob;
     if (my !== generation) return true;
     const yt = await ytPromise;
     if (my !== generation || ytId !== id) return true;
     // Si YouTube no deja incrustar el video, se toca el audio descargado.
-    await loadBlob(blob, title, yt instanceof YouTubePlayer ? yt : undefined, 0, my, true);
+    await loadBlob(full, title, yt instanceof YouTubePlayer ? yt : undefined, 0, my, isolate ? blob : null);
     if (!(yt instanceof YouTubePlayer)) $('ytPanel').hidden = true;
     return true;
   } catch (err) {
@@ -400,17 +406,20 @@ async function finishCapture(transcribe: boolean) {
 
 /** Transcribe un audio. Si viene de YouTube, se reproduce con el video en vez de con el archivo. */
 let objectUrl: string | null = null;
-async function loadBlob(blob: Blob, name: string, source?: YouTubePlayer, offset = 0, my = ++generation, separated = false) {
+/**
+ * Transcribe un audio. Si viene de YouTube, se reproduce con el video en vez de con el archivo.
+ * `guitar`: la guitarra ya aislada por GuitarrIA Local Pro. Con guitarra aislada, la tab sale de ella y
+ * los acordes del audio completo (el bajo y el resto de la banda ayudan a reconocerlos).
+ */
+async function loadBlob(blob: Blob, name: string, source?: YouTubePlayer, offset = 0, my = ++generation, guitar: Blob | null = null) {
   player.pause();
   showError(null);
   setBusy(true);
-  // Con GuitarrIA Local Pro se transcribe solo la guitarra (se sigue escuchando el audio original).
-  let analysisBlob = blob;
-  if (!separated && !source && wantIsolate()) {
+  if (!guitar && wantIsolate()) {
     setProgress(null, 'GuitarrIA Local está aislando la guitarra (1-3 min)…');
     abortLocal = new AbortController();
     try {
-      analysisBlob = await separateWithLocal(blob, abortLocal.signal);
+      guitar = await separateWithLocal(blob, abortLocal.signal);
     } catch (err) {
       if (my !== generation || (err as Error).name === 'AbortError') return;
       showError(`No se pudo aislar la guitarra (${(err as Error).message}); se transcribe el audio completo.`);
@@ -419,8 +428,10 @@ async function loadBlob(blob: Blob, name: string, source?: YouTubePlayer, offset
   }
   setProgress(0, 'Decodificando audio…');
   let buffer: AudioBuffer;
+  let guitarBuffer: AudioBuffer | null = null;
   try {
-    buffer = await audioCtx().decodeAudioData(await analysisBlob.arrayBuffer());
+    buffer = await audioCtx().decodeAudioData(await blob.arrayBuffer());
+    if (guitar) guitarBuffer = await audioCtx().decodeAudioData(await guitar.arrayBuffer());
   } catch (err) {
     console.error(err);
     if (my === generation) {
@@ -449,8 +460,9 @@ async function loadBlob(blob: Blob, name: string, source?: YouTubePlayer, offset
   }
   state.offset = offset;
   state.name = safeFileName(name.replace(/\.[^.]+$/, ''));
-  state.buffer = buffer;
-  state.prepared = null;
+  state.buffer = guitarBuffer ?? buffer;
+  state.chordBuffer = guitarBuffer ? buffer : null;
+  state.prepared = state.chordPrepared = null;
   setRate(state.rate);
   player.volume = Number($<HTMLInputElement>('volAudio').value);
   playBtn.textContent = '▶';
@@ -474,6 +486,12 @@ async function analyzeBuffer(my = ++generation): Promise<boolean> {
     if (my !== generation) return false;
     state.prepared = prepared;
     state.analyzedLowest = lowest;
+    if (state.chordBuffer) {
+      state.chordPrepared = await analyze(state.chordBuffer, { noise: 'off', autoTune: true, lowestMidi: lowest }, (p) => {
+        if (my === generation) setProgress(p, `Acordes: escuchando el tema completo… ${Math.round(p * 100)}%`);
+      });
+      if (my !== generation) return false;
+    }
   } catch (err) {
     console.error(err);
     if (my === generation) {
@@ -510,8 +528,15 @@ function refreshNotes() {
 }
 
 function refreshChords() {
-  const frames = state.prepared ? state.prepared.raw.frames : framesFromNotes(state.notes);
-  state.chords = detectChords(frames, { timeScale: state.prepared?.rate ?? 1, offset: state.prepared ? state.offset : 0 });
+  const src = state.chordPrepared ?? state.prepared;
+  const frames = src ? src.raw.frames : framesFromNotes(state.notes);
+  state.chords = detectChords(frames, {
+    timeScale: src?.rate ?? 1,
+    offset: src ? state.offset : 0,
+    onsets: src?.raw.onsets,
+  });
+  const key = detectKey(chromagram(frames));
+  $('keyInfo').textContent = key && key.confidence > 0.5 ? `Tonalidad: ${chordName(key.tonic, key.minor ? 'm' : '')}` : '';
   renderChordList();
   state.chordShown = undefined;
 }
@@ -974,7 +999,8 @@ impInput.addEventListener('change', async () => {
     audioEl.removeAttribute('src');
     audioEl.load();
     state.name = safeFileName(String(data.name ?? 'cancion'));
-    state.prepared = null;
+    state.prepared = state.chordPrepared = null;
+    state.chordBuffer = null;
     state.buffer = null;
     state.offset = 0;
     state.notes = data.notes.map((n: Note) => ({ start: n.start, duration: n.duration, midi: n.midi, velocity: n.velocity }));

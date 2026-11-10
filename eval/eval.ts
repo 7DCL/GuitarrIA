@@ -72,7 +72,13 @@ async function main() {
   const ctx = new AudioContext();
   const rows: Record<string, unknown>[] = [];
   for (const c of cases) {
-    const buffer = await ctx.decodeAudioData(await (await fetch(`./${dir}/${c.name}.wav`)).arrayBuffer());
+    let buffer: AudioBuffer;
+    try {
+      buffer = await ctx.decodeAudioData(await (await fetch(`./${dir}/${c.name}.wav`)).arrayBuffer());
+    } catch (e) {
+      console.warn(`${c.name}: no se pudo leer el audio (${e})`);
+      continue;
+    }
     const cache = new Map<string, Awaited<ReturnType<typeof analyze>>>();
     for (const cfg of configs) {
       const key = `${cfg.noise}|${cfg.autoTune}`;

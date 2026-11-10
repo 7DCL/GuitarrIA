@@ -33,7 +33,7 @@
         </form>
 
         <label id="isolateRow" class="isolate" hidden title="GuitarrIA Local Pro separa la guitarra del resto de la banda antes de transcribir">
-          <input id="isolate" type="checkbox" /> 🎸 <strong>Aislar la guitarra</strong> (GuitarrIA Local Pro: mejor con banda, tarda 1-3 min más)</label>
+          <input id="isolate" type="checkbox" /> 🎸 <strong>Aislar la guitarra</strong> <span class="hint">(experimental · GuitarrIA Local Pro: la tab sale solo de la guitarra; tarda 1-3 min más)</span></label>
 
         <div id="ytPanel" class="yt-panel" hidden>
           <div id="ytBox" class="yt-box"></div>
@@ -124,7 +124,7 @@
               </div>
             </div>
             <div class="chord-list-wrap">
-              <span class="label">Acordes del tema <span class="hint">(pulsa uno para ir a donde suena)</span></span>
+              <span class="label">Acordes del tema <strong id="keyInfo" class="key-info"></strong> <span class="hint">(pulsa uno para ir a donde suena)</span></span>
               <div id="chordList" class="chord-list"></div>
             </div>
             <span id="loopInfo" class="loop-info" aria-live="polite"></span>
