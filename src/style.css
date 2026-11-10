@@ -186,3 +186,14 @@ nav { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 #view-transcribe { display: flex; flex-direction: column; }
 .drop.later { order: 10; margin-top: 16px; padding: 16px; }
 .local-tip { margin: 10px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--bg); font-size: 13px; }
+
+.chord-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tab .ch { cursor: pointer; }
+.tab .ch.edited, .chord-chip.edited { text-decoration: underline dotted; }
+.chord-dialog { border: 1px solid var(--border); border-radius: 14px; background: var(--panel); color: var(--text); padding: 18px; max-width: min(420px, calc(100vw - 32px)); }
+.chord-dialog::backdrop { background: rgb(0 0 0 / .45); }
+.chord-dialog h3 { margin: 0 0 12px; font-size: 17px; }
+.chord-dialog form { display: grid; gap: 12px; }
+.ed-preview { margin: 0 auto; }
+.isolate { display: block; margin: -4px 0 12px; font-size: 14px; }
+.key-info { color: var(--text); margin: 0 6px; }
