@@ -13,6 +13,11 @@ on:
         description: 'Guitarristas de GuitarSet (00..05, separados por coma)'
         required: false
         default: '00'
+      job:
+        description: 'Qué medir'
+        type: choice
+        options: [todo, guitarset, separacion]
+        default: todo
       only:
         description: 'Prefijo de casos (gs_ = todos)'
         required: false
@@ -22,6 +27,7 @@ on:
 
 jobs:
   guitarset:
+    if: inputs.job != 'separacion'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -57,3 +63,30 @@ jobs:
         with:
           name: resultado-guitarset
           path: resultado.txt
+
+  # ¿Cuánto mejora aislar la guitarra (GuitarrIA Local Pro) en el caso con banda?
+  separacion:
+    if: inputs.job != 'guitarset'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci && node scripts/copy-model.mjs
+      - run: npx playwright install --with-deps chromium
+      - run: pip install -r local/requirements-pro.txt
+      - run: python3 eval/make_data.py && python3 eval/separate_case.py punteo_con_banda acordes_rasgueo
+      - name: Evaluar
+        env:
+          CONFIGS: '[{"label":"actual","noise":"off","autoTune":true,"mode":"lead","sensitivity":0.4}]'
+        run: |
+          ONLY=punteo_con_banda node scripts/eval.cjs | tee -a separacion.txt
+          ONLY=acordes_rasgueo node scripts/eval.cjs | tee -a separacion.txt
+      - run: |
+          { echo '```'; grep -vE '^ {3}' separacion.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
