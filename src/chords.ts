@@ -129,6 +129,127 @@ export interface ChordOptions {
   priorScale?: number; // cuánto se prefieren los acordes comunes
   bassWeight?: number; // cuánto pesa la nota del bajo
   bassMemory?: number; // 0..1: cuánto se recuerda el bajo entre ventanas
+  keyWeight?: number; // cuánto se castigan los acordes fuera de la tonalidad (0 = no se usa)
+  beatWeight?: number; // 0..1: cuánto más fácil es cambiar de acorde en un pulso (0 = no se usa)
+  onsets?: number[][]; // ataques de la IA (frames × 88), para el pulso; si faltan se estiman
+}
+
+// ---------- Tonalidad ----------
+// Perfiles de Krumhansl-Kessler: cuánto "pertenece" cada grado a una tonalidad mayor o menor.
+const KK_MAJOR = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
+const KK_MINOR = [6.33, 2.68, 3.52, 5.38, 2.6, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
+
+export interface Key {
+  tonic: number; // 0..11
+  minor: boolean;
+  confidence: number; // correlación con el perfil (0..1)
+}
+
+function corr(a: ArrayLike<number>, b: ArrayLike<number>): number {
+  const n = a.length;
+  let ma = 0;
+  let mb = 0;
+  for (let i = 0; i < n; i++) {
+    ma += a[i] / n;
+    mb += b[i] / n;
+  }
+  let sab = 0;
+  let saa = 0;
+  let sbb = 0;
+  for (let i = 0; i < n; i++) {
+    sab += (a[i] - ma) * (b[i] - mb);
+    saa += (a[i] - ma) ** 2;
+    sbb += (b[i] - mb) ** 2;
+  }
+  return saa && sbb ? sab / Math.sqrt(saa * sbb) : 0;
+}
+
+/** Tonalidad global a partir del cromagrama (suma de toda la canción). */
+export function detectKey(wins: { chroma: Float64Array; energy: number }[]): Key | null {
+  const total = new Float64Array(12);
+  for (const w of wins) for (let i = 0; i < 12; i++) total[i] += w.chroma[i] * w.energy;
+  if (total.every((v) => v === 0)) return null;
+  let best: Key = { tonic: 0, minor: false, confidence: -1 };
+  for (let tonic = 0; tonic < 12; tonic++)
+    for (const minor of [false, true]) {
+      const prof = minor ? KK_MINOR : KK_MAJOR;
+      const rotated = Array.from({ length: 12 }, (_, i) => prof[(i - tonic + 12) % 12]);
+      const c = corr(total, rotated);
+      if (c > best.confidence) best = { tonic, minor, confidence: c };
+    }
+  return best;
+}
+
+/** Notas de la tonalidad (en menor se incluye la sensible: el V mayor es habitual). */
+function keyScale(k: Key): Set<number> {
+  const steps = k.minor ? [0, 2, 3, 5, 7, 8, 10, 11] : [0, 2, 4, 5, 7, 9, 11];
+  return new Set(steps.map((s) => (k.tonic + s) % 12));
+}
+
+// ---------- Pulso ----------
+/** Curva de ataques por frame: ataques de la IA o, si no hay, subidas de energía por nota. */
+function onsetEnvelope(frames: number[][], onsets?: number[][]): Float64Array {
+  const env = new Float64Array(frames.length);
+  for (let f = 1; f < frames.length; f++) {
+    let v = 0;
+    if (onsets?.[f]) for (const x of onsets[f]) v += x > 0.3 ? x : 0;
+    else for (let k = 0; k < frames[f].length; k++) v += Math.max(0, frames[f][k] - frames[f - 1][k]);
+    env[f] = v;
+  }
+  return env;
+}
+
+/** Pulsos (en frames) por programación dinámica (Ellis 2007): tempo por autocorrelación y luego la mejor rejilla. */
+export function detectBeats(frames: number[][], onsets?: number[][]): number[] {
+  const env = onsetEnvelope(frames, onsets);
+  const n = env.length;
+  if (n < FPS * 4) return [];
+  const mean = env.reduce((a, b) => a + b, 0) / n;
+  if (mean <= 0) return [];
+  const centered = Array.from(env, (v) => v - mean);
+  // Tempo: lag con más autocorrelación entre 50 y 200 BPM, prefiriendo ~110 BPM.
+  const minLag = Math.round((60 / 200) * FPS);
+  const maxLag = Math.round((60 / 50) * FPS);
+  let bestLag = 0;
+  let bestScore = -Infinity;
+  for (let lag = minLag; lag <= maxLag; lag++) {
+    let ac = 0;
+    for (let i = lag; i < n; i++) ac += centered[i] * centered[i - lag];
+    const bpm = (60 * FPS) / lag;
+    const w = Math.exp(-0.5 * (Math.log2(bpm / 110) / 0.9) ** 2);
+    if (ac * w > bestScore) {
+      bestScore = ac * w;
+      bestLag = lag;
+    }
+  }
+  if (bestScore <= 0) return [];
+  const P = bestLag;
+  // Programación dinámica: cada pulso suma su ataque y paga por alejarse del periodo.
+  const score = new Float64Array(n);
+  const prev = new Int32Array(n).fill(-1);
+  const norm = Math.max(...env) || 1;
+  for (let t = 0; t < n; t++) {
+    let best = 0;
+    let arg = -1;
+    for (let p = t - 2 * P; p <= t - Math.round(P / 2); p++) {
+      if (p < 0) continue;
+      const v = score[p] - 6 * Math.log((t - p) / P) ** 2;
+      if (v > best) {
+        best = v;
+        arg = p;
+      }
+    }
+    score[t] = env[t] / norm + best;
+    prev[t] = arg;
+  }
+  let t = n - 1;
+  for (let k = Math.max(0, n - P); k < n; k++) if (score[k] > score[t]) t = k;
+  const beats: number[] = [];
+  while (t >= 0) {
+    beats.push(t);
+    t = prev[t];
+  }
+  return beats.reverse();
 }
 
 /** Puntuación de cada plantilla (más alto = mejor) para una ventana. */
@@ -155,10 +276,23 @@ export function detectChords(frames: number[][], options: ChordOptions = {}): Ch
     priorScale: 0.3,
     bassWeight: 0.08,
     bassMemory: 0.8,
+    keyWeight: 0,
+    beatWeight: 0,
+    onsets: [],
     ...options,
   };
   const { timeScale, changePenalty } = o;
   const wins = chromagram(frames, timeScale, o.offset, o.bassMemory);
+  // Tonalidad (antes del suavizado) y pulsos, para que el Viterbi prefiera lo musicalmente probable.
+  const key = o.keyWeight > 0 ? detectKey(wins) : null;
+  const scale = key ? keyScale(key) : null;
+  const keyPenalty = TEMPLATES.map((t) =>
+    scale ? (t.q.tones.filter(([iv]) => !scale.has((t.root + iv) % 12)).length / t.q.tones.length) * o.keyWeight : 0,
+  );
+  const per = Math.max(1, Math.round(HOP * FPS));
+  const onBeat = new Uint8Array(wins.length);
+  if (o.beatWeight > 0) for (const b of detectBeats(frames, o.onsets.length ? o.onsets : undefined)) onBeat[Math.min(wins.length - 1, Math.floor(b / per))] = 1;
+  const hasBeats = onBeat.some((x) => x);
   if (o.smoothing > 0) {
     // Integrador con fuga: cada ventana recuerda parte de las anteriores.
     const acc = new Float64Array(12);
@@ -178,7 +312,9 @@ export function detectChords(frames: number[][], options: ChordOptions = {}): Ch
   let prev = new Float64Array(nT + 1);
   const back: Int32Array[] = [];
   wins.forEach((w, i) => {
-    const s = silence(w) ? new Array(nT).fill(-1) : scores(w, o);
+    const s = silence(w) ? new Array(nT).fill(-1) : scores(w, o).map((v, j) => v - keyPenalty[j]);
+    // En un pulso cambiar de acorde es más barato; entre pulsos, más caro.
+    const penalty = hasBeats ? changePenalty * (onBeat[i] ? 1 - o.beatWeight : 1 + o.beatWeight) : changePenalty;
     const sN = silence(w) ? 1 : 0.35; // 'N' gana solo si apenas suena nada
     const cur = new Float64Array(nT + 1);
     const bp = new Int32Array(nT + 1);
@@ -186,7 +322,7 @@ export function detectChords(frames: number[][], options: ChordOptions = {}): Ch
     for (let j = 1; j <= nT; j++) if (prev[j] > prev[bestPrev]) bestPrev = j;
     for (let j = 0; j <= nT; j++) {
       const stay = prev[j];
-      const move = prev[bestPrev] - changePenalty;
+      const move = prev[bestPrev] - penalty;
       const from = i === 0 || stay >= move ? j : bestPrev;
       cur[j] = (i === 0 ? 0 : Math.max(stay, move)) + (j === N ? sN : s[j]);
       bp[j] = from;

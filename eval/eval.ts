@@ -14,13 +14,13 @@ interface Case {
 function majmin(name: string): string {
   if (name === 'N') return 'N';
   const m = name.split('/')[0].match(/^([A-G]#?)(.*)$/)!;
-  const minor = /^(m|m7|dim)$/.test(m[2]);
+  const minor = /^(m|m7|m6|m7b5|dim|dim7)$/.test(m[2]);
   return m[1] + (minor ? 'm' : '');
 }
 
-function chordScore(truth: NonNullable<Case['chords']>, frames: number[][], rate: number, opts: Record<string, number> = {}) {
+function chordScore(truth: NonNullable<Case['chords']>, frames: number[][], onsets: number[][], rate: number, opts: Record<string, number> = {}) {
   _setBassDominance(opts.dominance ?? 2);
-  const segs = detectChords(frames, { ...opts, timeScale: rate });
+  const segs = detectChords(frames, { ...opts, onsets, timeScale: rate });
   let n = 0;
   let exact = 0;
   let noBass = 0;
@@ -67,18 +67,19 @@ async function main() {
   const params = new URLSearchParams(location.search);
   const configs: Config[] = JSON.parse(params.get('configs') ?? '[]');
   const only = params.get('only') ?? '';
-  const cases: Case[] = (await (await fetch('./data/cases.json')).json()).filter((c: Case) => c.name.startsWith(only));
+  const dir = params.get('data') || 'data';
+  const cases: Case[] = (await (await fetch(`./${dir}/cases.json`)).json()).filter((c: Case) => c.name.startsWith(only));
   const ctx = new AudioContext();
   const rows: Record<string, unknown>[] = [];
   for (const c of cases) {
-    const buffer = await ctx.decodeAudioData(await (await fetch(`./data/${c.name}.wav`)).arrayBuffer());
+    const buffer = await ctx.decodeAudioData(await (await fetch(`./${dir}/${c.name}.wav`)).arrayBuffer());
     const cache = new Map<string, Awaited<ReturnType<typeof analyze>>>();
     for (const cfg of configs) {
       const key = `${cfg.noise}|${cfg.autoTune}`;
       if (!cache.has(key)) cache.set(key, await analyze(buffer, cfg, () => {}));
       const prepared = cache.get(key)!;
       if (c.chords) {
-        rows.push({ case: c.name, config: cfg.label, cents: Math.round(prepared.cents), chords: chordScore(c.chords, prepared.raw.frames, prepared.rate, cfg.chord) });
+        rows.push({ case: c.name, config: cfg.label, cents: Math.round(prepared.cents), chords: chordScore(c.chords, prepared.raw.frames, prepared.raw.onsets, prepared.rate, cfg.chord) });
         continue;
       }
       const notes = toNotes(prepared, { mode: cfg.mode, sensitivity: cfg.sensitivity, clean: cfg.clean });

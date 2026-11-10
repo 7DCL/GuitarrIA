@@ -16,8 +16,8 @@ const CONFIGS = JSON.parse(process.env.CONFIGS || 'null') || [
   try {
     const page = await browser.newPage();
     page.on('pageerror', (e) => console.error('pageerror:', e.message));
-    await page.goto(`http://localhost:5199/eval/index.html?only=${process.env.ONLY || ''}&configs=${encodeURIComponent(JSON.stringify(CONFIGS))}`);
-    await page.waitForFunction(() => window.__result, null, { timeout: 600000 });
+    await page.goto(`http://localhost:5199/eval/index.html?only=${process.env.ONLY || ''}&data=${process.env.DATA || 'data'}&configs=${encodeURIComponent(JSON.stringify(CONFIGS))}`);
+    await page.waitForFunction(() => window.__result, null, { timeout: Number(process.env.EVAL_TIMEOUT_MS || 600000) });
     const rows = await page.evaluate(() => window.__result);
     if (rows.error) throw new Error(rows.error);
     const pct = (x) => `${Math.round(x * 100)}%`.padStart(5);
