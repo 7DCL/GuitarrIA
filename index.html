@@ -28,7 +28,7 @@
     <main>
       <section id="view-transcribe" class="view">
         <form id="ytForm" class="yt-form">
-          <input id="ytUrl" type="text" inputmode="url" placeholder="Pega un enlace de YouTube…" autocomplete="off" aria-label="Enlace de YouTube" />
+          <input id="ytUrl" type="text" inputmode="url" placeholder="Pega un enlace de YouTube, Instagram o TikTok…" autocomplete="off" aria-label="Enlace del video" />
           <button id="ytLoad" class="btn primary" type="submit">Cargar video</button>
         </form>
 
@@ -82,6 +82,13 @@
                 <option value="off" selected>Apagado</option>
                 <option value="normal">Suave</option>
                 <option value="strong">Fuerte</option>
+              </select>
+            </label>
+            <label title="Para canciones completas: quita la batería y, en grabaciones estéreo, lo que suena en el centro (voz, bajo, bombo). Las guitarras suelen ir a los lados.">Separar guitarra
+              <select id="separate">
+                <option value="off" selected>No (guitarra sola)</option>
+                <option value="drums">Quitar batería</option>
+                <option value="full">Canción completa</option>
               </select>
             </label>
             <label title="Más alto: detecta notas suaves (y también más errores). Más bajo: solo las notas claras.">Sensibilidad
@@ -149,7 +156,11 @@
               <button class="seg" type="button" data-sheet="score" aria-pressed="false">Partitura</button>
               <button class="seg" type="button" data-sheet="tab" aria-pressed="false">Tab con ritmo</button>
             </div>
-            <label class="edit-toggle" title="Corrige notas, trastes y duraciones"><input id="editMode" type="checkbox" /> ✏️ Editar</label>
+            <div class="row">
+              <button id="undo" class="btn small" type="button" title="Deshacer (Ctrl+Z)" disabled>↶ Deshacer</button>
+              <button id="redo" class="btn small" type="button" title="Rehacer (Ctrl+Y)" disabled>↷ Rehacer</button>
+              <label class="edit-toggle" title="Corrige notas, trastes y duraciones"><input id="editMode" type="checkbox" /> ✏️ Editar</label>
+            </div>
           </div>
           <div id="tab" class="tab" role="list" aria-label="Tablatura: pulsa una columna para saltar a ella"></div>
           <div id="sheet" class="sheet" hidden aria-label="Partitura: pulsa una nota para ir a ella"><p id="sheetMsg" class="hint">Cargando partitura…</p></div>
@@ -170,8 +181,6 @@
               <button id="edHear" class="btn small" type="button" title="Oír la nota (tecla H)">🔊 Oír</button>
               <button id="edAdd" class="btn small" type="button" title="Añadir una nota después de esta (tecla Insert)">＋ Nota después</button>
               <button id="edDel" class="btn small" type="button" title="Borrar (tecla Supr)">🗑 Borrar</button>
-              <button id="undo" class="btn small" type="button" title="Deshacer (Ctrl+Z)">↶ Deshacer</button>
-              <button id="redo" class="btn small" type="button" title="Rehacer (Ctrl+Y)">↷ Rehacer</button>
             </div>
             <p class="hint">Escribe el traste en cada cuerda (vacío = no suena). ← → eligen otra nota.</p>
           </div>

@@ -2,8 +2,30 @@
 import { cleanNotes, type CleanOptions, type Mode } from './cleanup';
 import type { Note } from './fingering';
 import { extractNotes, runModel, type RawOutput } from './transcribe';
+import { separateGuitar } from './separate';
 
 export type NoiseLevel = 'off' | 'normal' | 'strong';
+/** off = nada; drums = quita la batería; full = además quita el centro de la mezcla (voz, bajo, bombo). */
+export type SeparateMode = 'off' | 'drums' | 'full';
+
+/** Realza la guitarra en una canción completa (ver separate.ts). Devuelve audio mono a 22.05 kHz. */
+export async function isolateGuitar(buffer: AudioBuffer, mode: SeparateMode, onProgress: (p: number) => void = () => {}): Promise<AudioBuffer> {
+  if (mode === 'off') return buffer;
+  const channels = Math.min(2, buffer.numberOfChannels);
+  const length = Math.ceil(buffer.duration * SR);
+  const ctx = new OfflineAudioContext(channels, length, SR);
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  src.connect(ctx.destination);
+  src.start();
+  const rendered = await ctx.startRendering();
+  const left = rendered.getChannelData(0);
+  const right = channels > 1 ? rendered.getChannelData(1) : left;
+  const y = await separateGuitar(left, right, { drums: true, center: mode === 'full', onProgress });
+  const out = new AudioBuffer({ length, sampleRate: SR, numberOfChannels: 1 });
+  out.getChannelData(0).set(y);
+  return out;
+}
 
 export interface Prepared {
   raw: RawOutput;
@@ -97,9 +119,11 @@ export function estimateCents(raw: RawOutput): number {
 /** Analiza el audio. Si está desafinado más de `tolerance` cents, lo corrige y vuelve a analizar. */
 export async function analyze(
   buffer: AudioBuffer,
-  opts: { noise: NoiseLevel; autoTune: boolean; tolerance?: number; lowestMidi?: number },
+  opts: { noise: NoiseLevel; autoTune: boolean; tolerance?: number; lowestMidi?: number; separate?: SeparateMode },
   onProgress: (pct: number, label: string) => void,
 ): Promise<Prepared> {
+  if (opts.separate && opts.separate !== 'off')
+    buffer = await isolateGuitar(buffer, opts.separate, (p) => onProgress(p, opts.separate === 'full' ? 'Separando la guitarra' : 'Quitando la batería'));
   // Corte de graves un poco por debajo de la cuerda más grave (Mi 82 Hz en guitarra, Mi 41 Hz en bajo).
   const lowCut = Math.max(25, 440 * 2 ** (((opts.lowestMidi ?? 40) - 69) / 12) * 0.8);
   let first: RawOutput | null = await runModel(await denoise(buffer, opts.noise, 1, lowCut), (p) => onProgress(p, 'Transcribiendo'));

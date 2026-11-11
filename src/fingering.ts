@@ -20,6 +20,7 @@ export interface Event {
   start: number;
   end: number;
   notes: PlacedNote[];
+  manual?: boolean; // duración puesta a mano en el editor: se respeta tal cual al escribir la partitura
 }
 
 export interface FingeringOptions {

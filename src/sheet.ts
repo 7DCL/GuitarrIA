@@ -55,7 +55,8 @@ export class SheetView {
     const at = (this.at ??= await load());
     if (!this.api) {
       const s = new at.Settings();
-      s.core.fontDirectory = `${import.meta.env.BASE_URL}alphatab/font/`;
+      // Absoluta: la ventana de impresión (about:blank) también tiene que encontrar la fuente.
+      s.core.fontDirectory = new URL(`${import.meta.env.BASE_URL}alphatab/font/`, location.href).href;
       s.core.useWorkers = false; // sin worker: más simple de servir desde GitHub Pages y suficiente para una canción
       s.core.enableLazyLoading = false; // todas las posiciones disponibles para seguir la reproducción
       s.player.enablePlayer = false; // suena nuestro reproductor (audio original o sintetizado)
@@ -63,18 +64,11 @@ export class SheetView {
       s.display.scale = 0.9;
       s.notation.elements.set(at.NotationElement.ChordDiagrams, false);
       s.notation.elements.set(at.NotationElement.GuitarTuning, false); // el texto sale en inglés; la afinación ya se ve en la app
-      const text = at.model.Color.fromJson(css('--text', '#2b2118'))!;
-      const muted = at.model.Color.fromJson(css('--muted', '#7a6a58'))!;
-      const res = s.display.resources;
-      res.mainGlyphColor = text;
-      res.secondaryGlyphColor = muted;
-      res.scoreInfoColor = text;
-      res.staffLineColor = muted;
-      res.barSeparatorColor = muted;
-      res.barNumberColor = muted;
+      this.colors(s, css('--text', '#2b2118'), css('--muted', '#7a6a58'));
       this.api = new at.AlphaTabApi(this.host, s);
       this.api.postRenderFinished.on(() => {
         this.rendering = false;
+        this.waiters.splice(0).forEach((w) => w());
         this.mapBeats();
         this.place(this.cursor, this.current);
         this.place(this.selBox, this.selected);
@@ -87,6 +81,23 @@ export class SheetView {
     }
     this.setProfile(profile, false);
     return at;
+  }
+
+  private waiters: (() => void)[] = [];
+  /** Espera a que termine el dibujo en curso (o resuelve ya si no hay ninguno). */
+  rendered(): Promise<void> {
+    return this.rendering ? new Promise((r) => this.waiters.push(r)) : Promise.resolve();
+  }
+
+  private colors(s: AT.Settings, text: string, muted: string) {
+    const C = this.at!.model.Color;
+    const res = s.display.resources;
+    res.mainGlyphColor = C.fromJson(text)!;
+    res.secondaryGlyphColor = C.fromJson(muted)!;
+    res.scoreInfoColor = C.fromJson(text)!;
+    res.staffLineColor = C.fromJson(muted)!;
+    res.barSeparatorColor = C.fromJson(muted)!;
+    res.barNumberColor = C.fromJson(muted)!;
   }
 
   private setProfile(profile: SheetProfile, rerender = true) {
@@ -178,8 +189,30 @@ export class SheetView {
   }
 
   /** Abre la partitura en una ventana lista para imprimir o guardar como PDF. */
-  print() {
-    this.api?.print('210mm');
+  async print() {
+    if (!this.api) return;
+    await this.pending;
+    await this.rendered();
+    // Se imprime esta misma página (CSS de impresión): se redibuja a ancho de A4 y en negro sobre blanco.
+    const api = this.api;
+    const relayout = async () => {
+      this.rendering = true;
+      api.updateSettings();
+      api.render();
+      await this.rendered();
+    };
+    document.body.classList.add('printing-sheet');
+    this.colors(api.settings, '#000000', '#555555');
+    this.host.style.width = '180mm';
+    await relayout();
+    try {
+      window.print();
+    } finally {
+      document.body.classList.remove('printing-sheet');
+      this.host.style.width = '';
+      this.colors(api.settings, css('--text', '#2b2118'), css('--muted', '#7a6a58'));
+      await relayout();
+    }
   }
 }
 

@@ -79,13 +79,15 @@ window.onYouTubeIframeAPIReady && window.onYouTubeIframeAPIReady();`;
 // ---------- Utilidades ----------
 const failures = [];
 async function check(name, fn) {
+  // ONLY=texto ejecuta solo las pruebas cuyo nombre lo contiene (para depurar).
+  if (process.env.ONLY && !name.includes(process.env.ONLY)) return;
   const t0 = Date.now();
   try {
     await fn();
     console.log(`  ✓ ${name} (${((Date.now() - t0) / 1000).toFixed(1)} s)`);
   } catch (err) {
     failures.push(name);
-    console.log(`  ✗ ${name}\n      ${String(err.message || err).split('\n')[0]}`);
+    console.log(`  ✗ ${name}\n      ${String(err.message || err).split('\n')[0]}\n      ${(String(err.stack).split('\n').find((l) => l.includes('e2e.cjs')) || '').trim()}`);
   }
 }
 function assert(cond, msg) {
@@ -194,12 +196,129 @@ async function noErrors(page) {
       await page.close();
     });
 
+    await check('partitura: ritmo, partitura + tab, editor con deshacer y exportaciones', async () => {
+      const page = await newPage(browser);
+      await page.evaluate(() => localStorage.removeItem('guitarria.sheet'));
+      await page.click('#demo');
+      await page.waitForSelector('#workspace:not([hidden])', { timeout: 180000 });
+      const r = await page.evaluate(() => window.__guitarria.state.rhythm);
+      assert(r && r.bpm > 40 && r.bpm < 250, `tempo no detectado: ${r && r.bpm}`);
+      assert(Number(await page.inputValue('#bpm')) === Math.round(r.bpm), 'el campo de tempo no muestra el tempo');
+      // Partitura + tab dibujada por alphaTab, con cursor que sigue la reproducción.
+      await page.click('.seg[data-sheet="scoretab"]');
+      await page.waitForSelector('#sheet svg', { timeout: 30000 });
+      await page.waitForFunction(() => !document.getElementById('sheetMsg') || document.getElementById('sheetMsg').hidden, null, { timeout: 30000 });
+      assert(!(await visible(page, '#tab')), 'la tab rápida sigue visible en la vista de partitura');
+      await page.click('#play');
+      await page.waitForTimeout(1200);
+      await page.click('#play');
+      assert(await visible(page, '.sheet-cursor'), 'no se marca en la partitura la nota que suena');
+      // Tempo a mano: ×2 duplica y Deshacer vuelve.
+      const bars = await page.evaluate(() => window.__guitarria.state.bars.length);
+      await page.click('#bpmDouble');
+      const bars2 = await page.evaluate(() => window.__guitarria.state.bars.length);
+      assert(bars2 > bars, `al doblar el tempo los compases no aumentan (${bars} → ${bars2})`);
+      await page.click('#undo');
+      assert((await page.evaluate(() => window.__guitarria.state.bars.length)) === bars, 'Deshacer no restauró el tempo');
+      await page.selectOption('#meter', '3/4');
+      assert((await page.evaluate(() => window.__guitarria.state.rhythm.beatsPerBar)) === 3, 'el compás no cambió');
+      // Editor: elegir la primera nota, cambiar el traste, borrar y deshacer.
+      await page.check('#editMode');
+      await page.click('.seg[data-sheet="quick"]');
+      await page.click('.col[data-i="0"]');
+      assert(await visible(page, '#editor'), 'no aparece el editor');
+      const nEvents = await page.evaluate(() => window.__guitarria.state.events.length);
+      const input = await page.$('#edFrets input[data-s="5"]');
+      await input.fill('7');
+      await input.dispatchEvent('change');
+      const has7 = await page.evaluate(() => window.__guitarria.state.events[0].notes.some((n) => n.string === 5 && n.fret === 7 && n.midi === 71));
+      assert(has7, 'el traste editado no está en la nota (o su altura es incorrecta)');
+      assert((await page.textContent('.col[data-i="0"]')).includes('7'), 'la tab no muestra el traste editado');
+      await page.click('.col[data-i="0"]');
+      await page.keyboard.press('Delete');
+      assert((await page.evaluate(() => window.__guitarria.state.events.length)) === nEvents - 1, 'Supr no borró la nota');
+      await page.keyboard.press('Control+z');
+      await page.keyboard.press('Control+z');
+      const back = await page.evaluate(() => window.__guitarria.state.events);
+      assert(back.length === nEvents && !back[0].notes.some((n) => n.string === 5 && n.fret === 7), `Ctrl+Z no deshizo los cambios (${back.length}/${nEvents}: ${JSON.stringify(back[0].notes.map((n) => [n.string, n.fret]))})`);
+      await page.keyboard.press('Control+y');
+      assert((await page.evaluate(() => window.__guitarria.state.events[0].notes.some((n) => n.fret === 7))), 'Ctrl+Y no rehízo');
+      await page.selectOption('#edDur', '1');
+      await page.click('#edAdd');
+      assert((await page.evaluate(() => window.__guitarria.state.events.length)) === nEvents + 1, 'no se añadió la nota');
+      // Exportaciones
+      const read = async (id) => {
+        const [d] = await Promise.all([page.waitForEvent('download'), page.click(id)]);
+        return { name: d.suggestedFilename(), data: fs.readFileSync(await d.path()) };
+      };
+      const xml = await read('#expXml');
+      const x = xml.data.toString('utf8');
+      assert(xml.name.endsWith('.musicxml') && x.includes('<score-partwise') && x.includes('<fret>7</fret>') && x.includes('<beats>3</beats>'), 'MusicXML incompleto');
+      const gp = await read('#expGp');
+      assert(gp.name.endsWith('.gp') && gp.data.length > 1000 && gp.data.slice(0, 2).toString() === 'PK', 'el archivo de Guitar Pro no es válido');
+      const mq = await read('#expMidQ');
+      assert(mq.data.slice(0, 4).toString() === 'MThd' && mq.data.length > 100, 'MIDI cuantizado vacío');
+      // PDF: imprime la página con solo la partitura (se simula el diálogo de impresión).
+      await page.evaluate(() => {
+        window.print = () => {
+          const sheet = document.getElementById('sheet');
+          const others = ['#tab', '#editor', '.settings', '.player', '.exports'].filter((s) => {
+            const el = document.querySelector(s);
+            return el && getComputedStyle(el).display !== 'none';
+          });
+          window.__printed = { printing: document.body.classList.contains('printing-sheet'), svgs: sheet.querySelectorAll('svg').length, width: sheet.querySelector('.sheet-host').style.width, others };
+        };
+      });
+      await page.emulateMedia({ media: 'print' });
+      await page.click('#expPdf');
+      await page.waitForFunction(() => window.__printed, null, { timeout: 30000 });
+      const printed = await page.evaluate(() => window.__printed);
+      await page.emulateMedia({ media: 'screen' });
+      assert(printed.printing && printed.svgs > 0 && printed.width === '180mm' && !printed.others.length, `PDF: la impresión no muestra solo la partitura: ${JSON.stringify(printed)}`);
+      // Proyecto con correcciones: se guardan y se recuperan.
+      const [dj] = await Promise.all([page.waitForEvent('download'), page.click('#expJson')]);
+      await page.setInputFiles('#impJson', await dj.path());
+      await page.waitForTimeout(500);
+      const re = await page.evaluate(() => ({ n: window.__guitarria.state.events.length, fret7: window.__guitarria.state.events[0].notes.some((n) => n.fret === 7), m: window.__guitarria.state.rhythm.beatsPerBar }));
+      assert(re.n === nEvents + 1 && re.fret7 && re.m === 3, `el proyecto no recuperó las correcciones: ${JSON.stringify(re)}`);
+      await page.click('.seg[data-sheet="scoretab"]');
+      await page.waitForTimeout(1500);
+      await page.screenshot({ path: `${OUT}/partitura-editor.png`, fullPage: true });
+      await noErrors(page);
+      await page.close();
+    });
+
+    await check('bajo y ukelele: afinaciones, tab y partitura con su número de cuerdas', async () => {
+      const page = await newPage(browser);
+      await page.click('#demo');
+      await page.waitForSelector('#workspace:not([hidden])', { timeout: 180000 });
+      for (const [ins, strings] of [['bass', 4], ['ukulele', 4], ['guitar', 6]]) {
+        await page.selectOption('#instrument', ins);
+        await page.waitForTimeout(300);
+        const tuning = await page.inputValue('#tuning');
+        const n = await page.$$eval('.tab .labels .cell', (c) => c.length);
+        assert(n === strings, `${ins} (${tuning}): la tab tiene ${n} cuerdas, esperaba ${strings}`);
+      }
+      await page.selectOption('#instrument', 'bass');
+      const [d] = await Promise.all([page.waitForEvent('download'), page.click('#expXml')]);
+      const x = fs.readFileSync(await d.path(), 'utf8');
+      assert(x.includes('<sign>F</sign>') && x.includes('<part-name>Bajo</part-name>'), 'la partitura de bajo no usa clave de fa');
+      await noErrors(page);
+      await page.close();
+    });
+
     await check('móvil (375 px): sin scroll horizontal y todo usable', async () => {
       const page = await newPage(browser, { viewport: { width: 375, height: 800 } });
       await page.click('#demo');
       await page.waitForSelector('#workspace:not([hidden])', { timeout: 180000 });
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
       assert(overflow <= 1, `la página se sale ${overflow}px a lo ancho`);
+      await page.click('.seg[data-sheet="scoretab"]');
+      await page.waitForSelector('#sheet svg', { timeout: 30000 });
+      await page.check('#editMode');
+      await page.waitForTimeout(500);
+      const overflow2 = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+      assert(overflow2 <= 1, `con partitura y editor la página se sale ${overflow2}px a lo ancho`);
       await page.screenshot({ path: `${OUT}/demo-movil.png`, fullPage: true });
       await page.click('[data-view="tuner"]');
       await page.screenshot({ path: `${OUT}/afinador-movil.png`, fullPage: true });

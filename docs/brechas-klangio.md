@@ -24,3 +24,15 @@ Diapasón animado, bucle A-B, velocidad, práctica progresiva, afinador, acordes
 4. **Editor**: clic en nota → cambiar traste/cuerda/duración, borrar/añadir, deshacer.
 5. **Separación**: Demucs en GuitarrIA Local (.exe) para aislar guitarra; web sigue igual.
 6. **Bajo/ukelele**: afinaciones y rangos nuevos en fingering.ts.
+
+## Estado (2026-11-11)
+| # | Brecha | Estado |
+|---|---|---|
+| 1 | Ritmo | Hecho: `src/rhythm.ts` (pulso por programación dinámica, compás, tonalidad, cuantización); editable (BPM, ÷2/×2, marcar pulso, compás, tonalidad). Medido en `eval/` (casos `ritmo_*`). |
+| 2 | Partitura + tab con figuras | Hecho: alphaTab (`src/sheet.ts`), vistas Tab rápida / Partitura + tab / Partitura / Tab con ritmo, cursor sincronizado. |
+| 3 | Editor | Hecho: trastes por cuerda, duración, mover, añadir, borrar, deshacer/rehacer; se guarda en el proyecto. |
+| 4 | Export | Hecho: MusicXML, Guitar Pro 7 (.gp), PDF (impresión), MIDI cuantizado. Falta LilyPond (poco usado). |
+| 5 | Aislar la guitarra | Parcial: separación armónico/percusiva + quitar el centro estéreo, en el navegador. Un modelo neuronal (Demucs) queda para GuitarrIA Local: pesa ~1 GB con PyTorch. |
+| 6 | Más instrumentos | Hecho: bajo 4/5 cuerdas y ukelele (GCEA, Sol grave, barítono), 7 cuerdas. |
+| 7 | Instagram/TikTok | Hecho vía GuitarrIA Local v3 (solo viaja el id). |
+| 8 | App móvil | Pendiente: la web funciona en el móvil (micrófono incluido). |

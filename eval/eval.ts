@@ -3,11 +3,42 @@
 import { analyze, toNotes, type NoiseLevel } from '../src/pipeline';
 import type { Mode } from '../src/cleanup';
 import { _setBassDominance, chordAt, detectChords } from '../src/chords';
+import { assignFingering } from '../src/fingering';
+import { analyzeRhythm, quantize, barTicks } from '../src/rhythm';
 
 interface Case {
   name: string;
   notes: { start: number; midi: number }[];
   chords?: { start: number; end: number; name: string }[];
+  rhythm?: { bpm: number; beatsPerBar: number; downbeat: number; mode: Mode; notes: { start: number; midi: number; tick: number }[] };
+}
+
+/**
+ * Ritmo: tempo (±4 %, el doble o la mitad cuentan como error), compás, y qué fracción de las notas
+ * cae en su semicorchea correcta. Las posiciones se comparan con un desplazamiento común (el primer
+ * compás puede empezar antes); si ese desplazamiento es un número entero de compases, el primer
+ * tiempo también está bien.
+ */
+function rhythmScore(truth: NonNullable<Case['rhythm']>, notes: { start: number; duration: number; midi: number; velocity: number }[], frames: number[][], rate: number) {
+  const events = assignFingering(notes, { tuning: [40, 45, 50, 55, 59, 64] });
+  const chords = detectChords(frames, { timeScale: rate }).filter((c) => c.root >= 0);
+  const r = analyzeRhythm(events, chords.map((c) => c.start), notes);
+  const q = quantize(events, r);
+  const diffs: number[] = [];
+  for (const t of truth.notes) {
+    const x = q.find((qq) => Math.abs(events[qq.index].start - t.start) <= 0.07 && events[qq.index].notes.some((n) => n.midi === t.midi));
+    if (x) diffs.push(x.tick - t.tick);
+  }
+  const counts = new Map<number, number>();
+  for (const d of diffs) counts.set(d, (counts.get(d) ?? 0) + 1);
+  const [offset, hits] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0] ?? [0, 0];
+  return {
+    bpm: r.bpm,
+    tempoOk: Math.abs(r.bpm - truth.bpm) / truth.bpm < 0.04,
+    meterOk: r.beatsPerBar === truth.beatsPerBar,
+    downbeatOk: offset % barTicks(r) === 0,
+    grid: hits / truth.notes.length,
+  };
 }
 
 // Reduce un acorde a su tríada mayor/menor (criterio MIREX "majmin").
@@ -43,6 +74,7 @@ interface Config {
   sensitivity: number;
   clean?: Record<string, unknown>;
   chord?: Record<string, number>;
+  separate?: 'off' | 'drums' | 'full';
 }
 
 const TOL = 0.07; // segundos de margen en el inicio de la nota
@@ -74,13 +106,18 @@ async function main() {
     const buffer = await ctx.decodeAudioData(await (await fetch(`./data/${c.name}.wav`)).arrayBuffer());
     const cache = new Map<string, Awaited<ReturnType<typeof analyze>>>();
     for (const cfg of configs) {
-      const key = `${cfg.noise}|${cfg.autoTune}`;
+      const key = `${cfg.noise}|${cfg.autoTune}|${cfg.separate ?? 'off'}`;
       if (!cache.has(key)) cache.set(key, await analyze(buffer, cfg, () => {}));
       const prepared = cache.get(key)!;
+      if (c.rhythm) {
+        const notes = toNotes(prepared, { mode: c.rhythm.mode, sensitivity: cfg.sensitivity, clean: cfg.clean });
+        rows.push({ case: c.name, config: cfg.label, rhythm: rhythmScore(c.rhythm, notes, prepared.raw.frames, prepared.rate) });
+      }
       if (c.chords) {
         rows.push({ case: c.name, config: cfg.label, cents: Math.round(prepared.cents), chords: chordScore(c.chords, prepared.raw.frames, prepared.rate, cfg.chord) });
         continue;
       }
+      if (!c.notes.length) continue;
       const notes = toNotes(prepared, { mode: cfg.mode, sensitivity: cfg.sensitivity, clean: cfg.clean });
       rows.push({ case: c.name, config: cfg.label, cents: Math.round(prepared.cents), ...score(c.notes, notes) });
     }

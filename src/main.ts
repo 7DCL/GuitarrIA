@@ -3,7 +3,7 @@ import { chordAt, detectChords, framesFromNotes, type ChordSegment } from './cho
 import type { Mode } from './cleanup';
 import { assignFingering, type Event, type Note } from './fingering';
 import { drawFretboard } from './fretboard';
-import { downloadWithLocal, localAvailable, localOptedIn, setLocalOptIn, LOCAL_DOWNLOAD } from './local';
+import { downloadWithLocal, localAvailable, localOptedIn, localVersion, parseSocialLink, setLocalOptIn, LOCAL_DOWNLOAD } from './local';
 import { AudioPlayer, ClockPlayer, YouTubePlayer, captureTabAudio, parseYouTubeId, type Player } from './player';
 import { pluck, renderDemo } from './synth';
 import { stringLabels, toAsciiTab } from './tab';
@@ -13,7 +13,7 @@ import { buildBars, toMusicXml, type Bar } from './notation';
 import { SheetView, musicXmlToGp, type SheetProfile } from './sheet';
 import { cloneEvents, deleteEvent, History, insertAfter, moveEvent, notesFromEvents, setDuration, setFret } from './edit';
 import { Tuner, type TunerReading } from './tuner';
-import { analyze, toNotes, type NoiseLevel, type Prepared } from './pipeline';
+import { analyze, toNotes, type NoiseLevel, type Prepared, type SeparateMode } from './pipeline';
 import { findVoicing, voicingSvg } from './voicing';
 import { encodeWav, download, formatTime, safeFileName } from './util';
 
@@ -127,7 +127,7 @@ function setProgress(fraction: number | null, label: string) {
 // Cada carga o análisis recibe un número: si empieza otro, el resultado del anterior se descarta.
 let generation = 0;
 let abortLocal: AbortController | null = null;
-const BUSY_IDS = ['ytLoad', 'pick', 'record', 'demo', 'mode', 'noise', 'sens', 'instrument', 'tuning', 'capo', 'impBtn'];
+const BUSY_IDS = ['ytLoad', 'pick', 'record', 'demo', 'mode', 'noise', 'separate', 'sens', 'instrument', 'tuning', 'capo', 'impBtn'];
 function setBusy(on: boolean) {
   for (const id of BUSY_IDS) ($(id) as HTMLButtonElement).disabled = on && !(id === 'record' && recorder);
   if (!on) progressRow.hidden = true;
@@ -252,7 +252,9 @@ $('ytForm').addEventListener('submit', async (e) => {
   showError(null);
   const id = parseYouTubeId($<HTMLInputElement>('ytUrl').value);
   if (!id) {
-    showError('No reconozco ese enlace de YouTube. Copia la dirección del video (youtube.com/watch?v=… o youtu.be/…).');
+    const social = parseSocialLink($<HTMLInputElement>('ytUrl').value);
+    if (social) return loadSocial(social.site, social.id);
+    showError('No reconozco ese enlace. Copia la dirección del video de YouTube (youtube.com/watch?v=… o youtu.be/…), de un reel de Instagram o de un video de TikTok (tiktok.com/@usuario/video/…).');
     return;
   }
   if (capture) await finishCapture(false);
@@ -300,6 +302,40 @@ function showCapture(yt: YouTubePlayer | Error | null) {
   ytStart.hidden = false;
   $('ytPanel').classList.remove('compact');
   if (!ytStatus.textContent) ytStatus.textContent = `Dura ${formatTime(yt.duration)}: escuchándolo, la transcripción tarda lo mismo que el video.`;
+}
+
+/** Instagram y TikTok: no se pueden incrustar ni escuchar desde la web, así que se bajan con GuitarrIA Local. */
+async function loadSocial(site: 'ig' | 'tt', id: string) {
+  const name = site === 'ig' ? 'Instagram' : 'TikTok';
+  if (capture) await finishCapture(false);
+  const version = await localVersion();
+  if (!version) {
+    $('ytPanel').hidden = true;
+    showError(`Los videos de ${name} se transcriben con GuitarrIA Local (gratis, para Windows): descárgalo desde ${LOCAL_DOWNLOAD}, ábrelo y vuelve a pegar el enlace. También puedes guardar el video y arrastrarlo aquí.`);
+    return;
+  }
+  setLocalOptIn(true);
+  if (version < 3) {
+    showError(`Tu GuitarrIA Local es antiguo: vuelve a descargarlo para usar ${name}.`);
+    return;
+  }
+  const my = ++generation;
+  setBusy(true);
+  abortLocal = new AbortController();
+  try {
+    const { blob, title } = await downloadWithLocal(
+      id,
+      (f) => my === generation && setProgress(f < 0 ? null : f, f < 0 ? `GuitarrIA Local está bajando el audio de ${name}…` : `Recibiendo audio… ${Math.round(f * 100)}%`),
+      abortLocal.signal,
+      site,
+    );
+    if (my !== generation) return;
+    await loadBlob(blob, title, undefined, 0, my);
+  } catch (err) {
+    if (my !== generation) return;
+    setBusy(false);
+    if ((err as Error).name !== 'AbortError') showError(`GuitarrIA Local no pudo bajar el video de ${name}: ${(err as Error).message}`);
+  }
 }
 
 /** Baja el audio con GuitarrIA Local y lo transcribe. Devuelve false si no está disponible o falla. */
@@ -452,7 +488,7 @@ async function analyzeBuffer(my = ++generation): Promise<boolean> {
   setProgress(0, 'La IA está escuchando… (la primera vez descarga el modelo)');
   const lowest = Math.min(...currentTuning());
   try {
-    const prepared = await analyze(state.buffer, { noise: noiseSel.value as NoiseLevel, autoTune: true, lowestMidi: lowest }, (p, what) => {
+    const prepared = await analyze(state.buffer, { noise: noiseSel.value as NoiseLevel, autoTune: true, lowestMidi: lowest, separate: $<HTMLSelectElement>('separate').value as SeparateMode }, (p, what) => {
       if (my === generation) setProgress(p, `${what}… ${Math.round(p * 100)}%`);
     });
     if (my !== generation) return false;
@@ -655,6 +691,7 @@ sensInput.addEventListener('input', () => ($('sensVal').textContent = `${Math.ro
 sensInput.addEventListener('change', refreshNotes);
 modeSel.addEventListener('change', refreshNotes);
 noiseSel.addEventListener('change', () => analyzeBuffer());
+$('separate').addEventListener('change', () => analyzeBuffer());
 namesInput.addEventListener('change', () => (state.dirty = true));
 
 // ---------- Reproductor ----------
@@ -1272,6 +1309,9 @@ $('edFrets').addEventListener('change', (e) => {
     updateEditor();
     return;
   }
+  const s = Number(input.dataset.s);
+  const cur = state.events[state.selected]?.notes.find((n) => n.string === s)?.fret ?? null;
+  if (cur === fret) return; // sin cambios (el navegador repite «change» al salir del campo)
   const before = state.events.length;
   const next = setFret(state.events, state.selected, Number(input.dataset.s), fret, currentTuning(), capo());
   applyEdit(next, next.length < before ? state.selected - 1 : state.selected);
@@ -1349,7 +1389,7 @@ $('expPdf').addEventListener('click', async () => {
   const t0 = performance.now();
   await new Promise((r) => setTimeout(r, 100));
   while ((!sheet?.score || sheet.rendering) && performance.now() - t0 < 15000) await new Promise((r) => setTimeout(r, 100));
-  sheet?.print();
+  await sheet?.print();
 });
 $('expMidQ').addEventListener('click', () => {
   if (!needScore()) return;

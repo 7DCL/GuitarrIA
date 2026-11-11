@@ -334,7 +334,7 @@ export function quantize(events: Event[], r: Rhythm, grid = 1): QEvent[] {
     const next = out[i + 1]?.tick ?? Infinity;
     // Un silencio de menos de un tiempo entre dos notas casi siempre es la nota sonando hasta la siguiente
     // (la guitarra sigue vibrando): se escribe ligado, que se lee mucho mejor.
-    const target = next !== Infinity && next - end < TPQ ? next : Math.min(end, next);
+    const target = !ev.manual && next !== Infinity && next - end < TPQ ? next : Math.min(end, next);
     q.dur = Math.max(grid, target - q.tick);
   });
   return out;

@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, quote, urlparse
 
 import yt_dlp
 
-VERSION = "2"
+VERSION = "3"
 HOST, PORT = "127.0.0.1", 8765
 ALLOWED_ORIGINS = {"https://7dcl.github.io"}
 if os.environ.get("GUITARRIA_DEV"):
@@ -30,6 +30,13 @@ CACHE = Path(tempfile.gettempdir()) / "guitarria-local"
 MAX_SECONDS = 20 * 60
 CACHE_KEEP = 20  # audios guardados como máximo (los más viejos se borran)
 VIDEO_ID = re.compile(r"^[\w-]{11}$")
+# Además de YouTube: Instagram (código de la publicación) y TikTok (número del video).
+# Solo se aceptan ids: la URL la arma este programa, así la web no puede pedir otra cosa.
+SITES = {
+    "yt": (VIDEO_ID, "https://www.youtube.com/watch?v={}"),
+    "ig": (re.compile(r"^[\w-]{5,40}$"), "https://www.instagram.com/reel/{}/"),
+    "tt": (re.compile(r"^\d{8,25}$"), "https://www.tiktok.com/@/video/{}"),
+}
 _lock = threading.Lock()
 
 
@@ -87,11 +94,13 @@ def prune():
             pass
 
 
-def download(vid):
+def download(vid, site="yt"):
     """Devuelve (ruta, título) del audio del video `vid`, usando la caché si ya se bajó."""
-    if not VIDEO_ID.match(vid):
+    pattern, template = SITES[site]
+    if not pattern.match(vid):
         raise ValueError("Id de video no válido")
-    url = f"https://www.youtube.com/watch?v={vid}"
+    url = template.format(vid)
+    vid = vid if site == "yt" else f"{site}-{vid}"  # nombre en la caché
     CACHE.mkdir(exist_ok=True)
     titles = CACHE / "titles.json"
     with _lock:  # una descarga a la vez: yt-dlp y la caché no son seguros en paralelo
@@ -147,13 +156,15 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/health":
             return self._json(200, {"ok": True, "version": VERSION, "yt_dlp": yt_dlp.version.__version__})
         if parsed.path == "/audio":
-            vid = parse_qs(parsed.query).get("id", [""])[0]
-            if not VIDEO_ID.match(vid):
-                return self._json(400, {"error": "Id de video de YouTube no válido"})
+            query = parse_qs(parsed.query)
+            vid = query.get("id", [""])[0]
+            site = query.get("site", ["yt"])[0]
+            if site not in SITES or not SITES[site][0].match(vid):
+                return self._json(400, {"error": "Id de video no válido"})
             try:
-                print(f"Descargando: {vid}")
+                print(f"Descargando: {site} {vid}")
                 start = time.time()
-                path, title = download(vid)
+                path, title = download(vid, site)
             except Exception as e:  # noqa: BLE001 — el mensaje se muestra al usuario en la web
                 print(f"Error: {e}")
                 return self._json(502, {"error": str(e).splitlines()[0][:300]})

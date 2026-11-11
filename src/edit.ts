@@ -12,7 +12,7 @@ export function notesFromEvents(events: Event[]): Note[] {
 }
 
 function withTimes(ev: Event, start: number, end: number): Event {
-  return { start, end, notes: ev.notes.map((n) => ({ ...n, start, duration: end - start })) };
+  return { start, end, manual: true, notes: ev.notes.map((n) => ({ ...n, start, duration: end - start })) };
 }
 
 /** Pone (o quita, con `fret = null`) la nota de una cuerda en un evento. */
