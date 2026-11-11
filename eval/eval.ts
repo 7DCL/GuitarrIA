@@ -33,6 +33,7 @@ function rhythmScore(truth: NonNullable<Case['rhythm']>, notes: { start: number;
   for (const d of diffs) counts.set(d, (counts.get(d) ?? 0) + 1);
   const [offset, hits] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0] ?? [0, 0];
   return {
+    input: { notes, changes: chords.map((c) => c.start) }, // para afinar el algoritmo sin volver a pasar la IA
     bpm: r.bpm,
     tempoOk: Math.abs(r.bpm - truth.bpm) / truth.bpm < 0.04,
     meterOk: r.beatsPerBar === truth.beatsPerBar,
@@ -75,6 +76,7 @@ interface Config {
   clean?: Record<string, unknown>;
   chord?: Record<string, number>;
   separate?: 'off' | 'drums' | 'full';
+  only?: string; // solo los casos cuyo nombre empieza así
 }
 
 const TOL = 0.07; // segundos de margen en el inicio de la nota
@@ -106,6 +108,7 @@ async function main() {
     const buffer = await ctx.decodeAudioData(await (await fetch(`./data/${c.name}.wav`)).arrayBuffer());
     const cache = new Map<string, Awaited<ReturnType<typeof analyze>>>();
     for (const cfg of configs) {
+      if (cfg.only && !c.name.startsWith(cfg.only)) continue;
       const key = `${cfg.noise}|${cfg.autoTune}|${cfg.separate ?? 'off'}`;
       if (!cache.has(key)) cache.set(key, await analyze(buffer, cfg, () => {}));
       const prepared = cache.get(key)!;

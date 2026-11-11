@@ -1,6 +1,6 @@
 // Ritmo: pulso, tempo, compás, tonalidad y cuantización de las notas a una cuadrícula musical.
 // La IA da notas en segundos; para escribir partitura hacen falta figuras (negra, corchea…) y compases.
-import type { Event } from './fingering';
+import type { Event } from "./fingering";
 
 /** Resolución de la cuadrícula: ticks por negra (4 = semicorcheas). */
 export const TPQ = 4;
@@ -54,7 +54,8 @@ export function estimatePeriod(env: Float32Array): number {
     // Suma también los múltiplos: el pulso real se repite a 2× y 4× su periodo.
     let s = ac[lag];
     if (2 * lag <= maxLag) s += 0.5 * ac[2 * lag];
-    else if (ac[Math.round(lag / 2)] !== undefined) s += 0.25 * ac[Math.round(lag / 2)];
+    else if (ac[Math.round(lag / 2)] !== undefined)
+      s += 0.25 * ac[Math.round(lag / 2)];
     const bpm = (60 * FPS) / lag;
     const prior = Math.exp(-0.5 * (Math.log2(bpm / 110) / 0.9) ** 2);
     const score = s * prior;
@@ -72,7 +73,10 @@ export function estimatePeriod(env: Float32Array): number {
 }
 
 /** Energía de ataques en una rejilla de periodo `period` (mejor fase) y a medio camino entre pulsos. */
-function gridEnergy(env: Float32Array, period: number): { on: number; mid: number } {
+function gridEnergy(
+  env: Float32Array,
+  period: number,
+): { on: number; mid: number } {
   const at = (x: number) => {
     const i = Math.round(x);
     let m = 0;
@@ -89,6 +93,60 @@ function gridEnergy(env: Float32Array, period: number): { on: number; mid: numbe
     }
     if (on > best.on) best = { on, mid };
   }
+  return best;
+}
+
+/**
+ * Ajuste de rejilla métrica: busca el periodo de negra y la fase que mejor explican los ataques,
+ * valorando más los que caen en el pulso (1) que en la corchea (0.6) o la semicorchea (0.35), y
+ * restando lo que sumaría un ataque al azar (si no, una rejilla más fina siempre ganaría).
+ * Devuelve el periodo (s) y el instante de un pulso.
+ */
+let DENSITY_W = 0.08;
+export const _setDensityW = (v: number) => (DENSITY_W = v); // para afinar desde las pruebas
+export function fitGrid(onsets: { t: number; w: number }[]): {
+  period: number;
+  phase: number;
+  score: number;
+} {
+  const SIGMA = 0.022; // tolerancia de tiempo (s)
+  const HIER = [1, 0.35, 0.6, 0.35];
+  const meanHier = HIER.reduce((a, b) => a + b) / 4;
+  let best = { period: 0.5, phase: 0, score: -Infinity };
+  if (onsets.length < 3) return best;
+  const total = onsets.reduce((a, o) => a + o.w, 0);
+  const span = Math.max(1, onsets[onsets.length - 1].t - onsets[0].t);
+  // Búsqueda gruesa y luego fina alrededor del mejor (rápido incluso con miles de notas).
+  const scan = (pMin: number, pMax: number, pStep: number, phStep: number) => {
+    for (let period = pMin; period <= pMax; period += pStep) {
+      const sub = period / 4;
+      const baseline =
+        meanHier * Math.min(1, (SIGMA * Math.sqrt(Math.PI)) / sub);
+      const bpm = 60 / period;
+      // Leve preferencia por tempos medios y por 1–2 ataques por pulso (lo habitual en una partitura).
+      const density = (onsets.length * period) / span;
+      const prior =
+        0.08 * Math.log2(bpm / 105) ** 2 +
+        DENSITY_W * Math.log2(density / 1.6) ** 2;
+      for (let phase = 0; phase < period; phase += phStep) {
+        let sc = 0;
+        for (const o of onsets) {
+          const x = (o.t - phase) / sub;
+          const k = Math.round(x);
+          const dev = (x - k) * sub;
+          sc +=
+            o.w *
+            (HIER[((k % 4) + 4) % 4] * Math.exp(-((dev / SIGMA) ** 2)) -
+              baseline);
+        }
+        sc = sc / total - prior;
+        if (sc > best.score) best = { period, phase, score: sc };
+      }
+    }
+  };
+  scan(60 / 200, 60 / 48, 0.004, 0.01);
+  const coarse = best.period;
+  scan(coarse - 0.006, coarse + 0.006, 0.001, 0.004);
   return best;
 }
 
@@ -109,7 +167,11 @@ export function fixOctave(env: Float32Array, period: number): number {
  * Seguimiento del pulso por programación dinámica (Ellis 2007): cada pulso cae en un ataque
  * y la distancia entre pulsos se parece al periodo. Tolera pequeños cambios de tempo.
  */
-export function trackBeats(env: Float32Array, period: number, tightness = 100): number[] {
+export function trackBeats(
+  env: Float32Array,
+  period: number,
+  tightness = 100,
+): number[] {
   const n = env.length;
   if (n < period * 2) return [];
   const mean = env.reduce((s, v) => s + v, 0) / n;
@@ -136,16 +198,24 @@ export function trackBeats(env: Float32Array, period: number, tightness = 100): 
   }
   // El último pulso: el mejor puntaje dentro del último periodo.
   let end = n - 1;
-  for (let t = Math.max(0, n - Math.round(period)); t < n; t++) if (score[t] > score[end]) end = t;
+  for (let t = Math.max(0, n - Math.round(period)); t < n; t++)
+    if (score[t] > score[end]) end = t;
   const beats: number[] = [];
   for (let t = end; t >= 0; t = back[t]) beats.unshift(t);
   return beats;
 }
 
 /** Rellena pulsos antes del primero y después del último con el periodo medio, hasta cubrir [0, length]. */
-export function extendBeats(beats: number[], length: number, fallbackPeriod: number): number[] {
+export function extendBeats(
+  beats: number[],
+  length: number,
+  fallbackPeriod: number,
+): number[] {
   const out = [...beats];
-  const p = out.length >= 2 ? (out[out.length - 1] - out[0]) / (out.length - 1) : fallbackPeriod;
+  const p =
+    out.length >= 2
+      ? (out[out.length - 1] - out[0]) / (out.length - 1)
+      : fallbackPeriod;
   if (!out.length) out.push(0);
   while (out[0] - p > -p * 0.5 && out[0] > 0.0001) out.unshift(out[0] - p);
   while (out[out.length - 1] < length + p) out.push(out[out.length - 1] + p);
@@ -157,7 +227,11 @@ export function extendBeats(beats: number[], length: number, fallbackPeriod: num
  * Elige compás (3 o 4 pulsos) y dónde cae el primer tiempo. Los cambios de acorde y los ataques
  * fuertes suelen caer en el primer tiempo del compás.
  */
-export function detectMeter(beats: number[], events: Event[], chordChanges: number[]): { beatsPerBar: number; phase: number } {
+export function detectMeter(
+  beats: number[],
+  events: Event[],
+  chordChanges: number[],
+): { beatsPerBar: number; phase: number } {
   const weight = new Float64Array(beats.length);
   const nearest = (t: number) => {
     let lo = 0;
@@ -169,19 +243,45 @@ export function detectMeter(beats: number[], events: Event[], chordChanges: numb
     }
     return Math.abs(beats[lo] - t) <= Math.abs(beats[hi] - t) ? lo : hi;
   };
-  const tol = beats.length > 1 ? (beats[1] - beats[0]) * 0.25 : 0.1;
+  const beatLen = beats.length > 1 ? beats[1] - beats[0] : 0.5;
+  const tol = beatLen * 0.25;
+  // El detector de acordes trabaja en ventanas de 0.2 s: sus cambios llegan con algo de retraso.
   for (const c of chordChanges) {
-    const i = nearest(c);
-    if (Math.abs(beats[i] - c) < tol) weight[i] += 2;
+    const i = nearest(c - 0.05);
+    if (Math.abs(beats[i] - c) < Math.max(0.15, beatLen * 0.45)) weight[i] += 1;
   }
-  for (const ev of events) {
+  const lows = events.map((e) => Math.min(...e.notes.map((n) => n.midi)));
+  events.forEach((ev, k) => {
     const i = nearest(ev.start);
-    if (Math.abs(beats[i] - ev.start) < tol) {
-      // Notas graves y acordes llenos marcan el primer tiempo.
-      const low = Math.min(...ev.notes.map((n) => n.midi));
-      weight[i] += 0.15 * ev.notes.length + (low < 50 ? 0.4 : 0);
-    }
-  }
+    if (Math.abs(beats[i] - ev.start) >= tol) return;
+    // Un bajo (la nota más grave de su entorno, bastante por debajo de lo que suena alrededor)
+    // y los acordes llenos marcan el primer tiempo.
+    const around: number[] = [];
+    for (
+      let j = k - 1;
+      j >= 0 && ev.start - events[j].start < beatLen * 1.6;
+      j--
+    )
+      around.push(lows[j]);
+    for (
+      let j = k + 1;
+      j < events.length && events[j].start - ev.start < beatLen * 1.6;
+      j++
+    )
+      around.push(lows[j]);
+    const sorted = around.sort((a, b) => a - b);
+    const bass =
+      sorted.length >= 2 &&
+      lows[k] <= sorted[0] &&
+      lows[k] <= sorted[Math.floor(sorted.length / 2)] - 4;
+    weight[i] += 0.1 * ev.notes.length + (bass ? 1 : 0);
+  });
+    console.log(
+      "pesos",
+      Array.from(weight)
+        .map((w, i) => `${beats[i].toFixed(2)}:${w.toFixed(1)}`)
+        .join(" "),
+    );
   let best = { beatsPerBar: 4, phase: 0, score: -Infinity };
   for (const m of [4, 3]) {
     for (let ph = 0; ph < m; ph++) {
@@ -192,7 +292,11 @@ export function detectMeter(beats: number[], events: Event[], chordChanges: numb
         if ((i - ph) % m === 0) on += weight[i];
       }
       // Proporción de peso en los primeros tiempos, comparada con el azar (1/m); 4/4 es lo más común.
-      const score = all ? (on / all) * m + (m === 4 ? 0.35 : 0) : m === 4 ? 1 : 0;
+      const score = all
+        ? (on / all) * m + (m === 4 ? 0.15 : 0)
+        : m === 4
+          ? 1
+          : 0;
       if (score > best.score) best = { beatsPerBar: m, phase: ph, score };
     }
   }
@@ -200,8 +304,12 @@ export function detectMeter(beats: number[], events: Event[], chordChanges: numb
 }
 
 // ---------- Tonalidad ----------
-const MAJOR_PROFILE = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
-const MINOR_PROFILE = [6.33, 2.68, 3.52, 5.38, 2.6, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
+const MAJOR_PROFILE = [
+  6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88,
+];
+const MINOR_PROFILE = [
+  6.33, 2.68, 3.52, 5.38, 2.6, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17,
+];
 /** Quintas de la armadura de cada tónica mayor (C=0, Db=-5, D=2…). */
 const MAJOR_FIFTHS = [0, -5, 2, -3, 4, -1, 6, 1, -4, 3, -2, 5];
 
@@ -220,17 +328,28 @@ function corr(a: number[], b: number[]): number {
 }
 
 /** Tonalidad por perfiles de Krumhansl: devuelve la armadura (quintas) y si es menor. */
-export function detectKey(notes: { midi: number; duration: number; velocity: number }[]): { key: number; minor: boolean; tonic: number } {
+export function detectKey(
+  notes: { midi: number; duration: number; velocity: number }[],
+): { key: number; minor: boolean; tonic: number } {
   const hist = new Array(12).fill(0);
-  for (const n of notes) hist[n.midi % 12] += Math.min(n.duration, 2) * Math.min(1, n.velocity + 0.2);
+  for (const n of notes)
+    hist[n.midi % 12] +=
+      Math.min(n.duration, 2) * Math.min(1, n.velocity + 0.2);
   let best = { key: 0, minor: false, tonic: 0, r: -Infinity };
   for (let t = 0; t < 12; t++) {
     const rot = (p: number[]) => hist.map((_, i) => p[(i - t + 12) % 12]);
     const rMaj = corr(hist, rot(MAJOR_PROFILE));
     const rMin = corr(hist, rot(MINOR_PROFILE));
-    if (rMaj > best.r) best = { key: MAJOR_FIFTHS[t], minor: false, tonic: t, r: rMaj };
+    if (rMaj > best.r)
+      best = { key: MAJOR_FIFTHS[t], minor: false, tonic: t, r: rMaj };
     // Menor relativa: misma armadura que la mayor tres semitonos arriba.
-    if (rMin > best.r) best = { key: MAJOR_FIFTHS[(t + 3) % 12], minor: true, tonic: t, r: rMin };
+    if (rMin > best.r)
+      best = {
+        key: MAJOR_FIFTHS[(t + 3) % 12],
+        minor: true,
+        tonic: t,
+        r: rMin,
+      };
   }
   // Fa# mayor / Sol♭ mayor: preferir 6 bemoles a 6 sostenidos solo si ya era negativa (se queda en ±6).
   return { key: best.key, minor: best.minor, tonic: best.tonic };
@@ -244,9 +363,39 @@ export function analyzeRhythm(
 ): Rhythm {
   const length = events.length ? Math.max(...events.map((e) => e.end)) + 1 : 4;
   const env = onsetEnvelope(events, length);
-  const period = events.length >= 4 ? fixOctave(env, estimatePeriod(env)) : FPS * 0.6;
-  const raw = events.length >= 4 ? trackBeats(env, period).map((f) => f / FPS) : [];
-  const beats = extendBeats(raw, length, period / FPS);
+  let beats: number[];
+  if (events.length >= 4) {
+    // Tempo y fase por ajuste de rejilla; después, seguimiento del pulso para absorber pequeños
+    // cambios de tempo. Si el seguimiento se aleja del tempo ajustado, se usa la rejilla fija.
+    const onsets = events.map((e) => ({
+      t: e.start,
+      w: Math.min(
+        2,
+        0.5 + e.notes.reduce((a, n) => a + Math.min(1, n.velocity), 0) * 0.5,
+      ),
+    }));
+    const fit = fitGrid(onsets);
+    // Rejilla fija con el tempo ajustado; cada pulso se acerca un poco al ataque más fuerte que
+    // tenga muy cerca (absorbe pequeñas variaciones de tempo sin perder la fase).
+    beats = [];
+    const pull = Math.min(0.06, fit.period * 0.12);
+    let j = 0;
+    for (
+      let t = fit.phase % fit.period;
+      t < length + fit.period;
+      t += fit.period
+    ) {
+      while (j < onsets.length && onsets[j].t < t - pull) j++;
+      let bestW = 0;
+      let at = t;
+      for (let k = j; k < onsets.length && onsets[k].t <= t + pull; k++)
+        if (onsets[k].w > bestW) {
+          bestW = onsets[k].w;
+          at = onsets[k].t;
+        }
+      beats.push(t + (at - t) * 0.6);
+    }
+  } else beats = extendBeats([], length, 0.6);
   const { beatsPerBar, phase } = detectMeter(beats, events, chordChanges);
   // El compás 1 es el último primer tiempo que no pasa del primer evento.
   const firstEvent = events.length ? events[0].start : 0;
@@ -259,9 +408,34 @@ export function analyzeRhythm(
     }
     firstBar -= beatsPerBar;
   }
-  while (firstBar + beatsPerBar < beats.length && beats[firstBar + beatsPerBar] <= firstEvent + 0.05) firstBar += beatsPerBar;
+  while (
+    firstBar + beatsPerBar < beats.length &&
+    beats[firstBar + beatsPerBar] <= firstEvent + 0.05
+  )
+    firstBar += beatsPerBar;
   const k = detectKey(notes.length ? notes : events.flatMap((e) => e.notes));
-  return { beats, bpm: bpmOf(beats), beatsPerBar, beatUnit: 4, firstBar, key: k.key, minor: k.minor };
+  return {
+    beats,
+    bpm: bpmOf(beats),
+    beatsPerBar,
+    beatUnit: 4,
+    firstBar,
+    key: k.key,
+    minor: k.minor,
+  };
+}
+
+/** ¿Los pulsos seguidos coinciden con la fase de la rejilla (no a contratiempo)? */
+function aligned(
+  beats: number[],
+  fit: { period: number; phase: number },
+): boolean {
+  let ok = 0;
+  for (const b of beats) {
+    const x = (b - fit.phase) / fit.period;
+    if (Math.abs(x - Math.round(x)) < 0.15) ok++;
+  }
+  return ok >= beats.length * 0.7;
 }
 
 export function bpmOf(beats: number[]): number {
@@ -271,7 +445,12 @@ export function bpmOf(beats: number[]): number {
 }
 
 /** Pulsos uniformes para un tempo fijo, alineados con el primer tiempo actual (cuando el usuario corrige el BPM). */
-export function withTempo(r: Rhythm, bpm: number, length: number, anchor?: number): Rhythm {
+export function withTempo(
+  r: Rhythm,
+  bpm: number,
+  length: number,
+  anchor?: number,
+): Rhythm {
   const p = 60 / bpm;
   // Ancla: un primer tiempo de compás (el actual, o el que marca el usuario al pulsar el pulso).
   const start = anchor ?? r.beats[r.firstBar] ?? 0;
@@ -330,11 +509,17 @@ export function quantize(events: Event[], r: Rhythm, grid = 1): QEvent[] {
   });
   out.forEach((q, i) => {
     const ev = events[q.index];
-    const end = Math.max(q.tick + grid, Math.round(timeToTick(r, ev.end) / grid) * grid);
+    const end = Math.max(
+      q.tick + grid,
+      Math.round(timeToTick(r, ev.end) / grid) * grid,
+    );
     const next = out[i + 1]?.tick ?? Infinity;
     // Un silencio de menos de un tiempo entre dos notas casi siempre es la nota sonando hasta la siguiente
     // (la guitarra sigue vibrando): se escribe ligado, que se lee mucho mejor.
-    const target = !ev.manual && next !== Infinity && next - end < TPQ ? next : Math.min(end, next);
+    const target =
+      !ev.manual && next !== Infinity && next - end < TPQ
+        ? next
+        : Math.min(end, next);
     q.dur = Math.max(grid, target - q.tick);
   });
   return out;
@@ -343,21 +528,25 @@ export function quantize(events: Event[], r: Rhythm, grid = 1): QEvent[] {
 // ---------- Figuras ----------
 /** Duraciones escribibles en ticks (semicorchea..redonda, con puntillo). */
 export const NOTE_VALUES: { ticks: number; type: string; dots: number }[] = [
-  { ticks: 16, type: 'whole', dots: 0 },
-  { ticks: 12, type: 'half', dots: 1 },
-  { ticks: 8, type: 'half', dots: 0 },
-  { ticks: 6, type: 'quarter', dots: 1 },
-  { ticks: 4, type: 'quarter', dots: 0 },
-  { ticks: 3, type: 'eighth', dots: 1 },
-  { ticks: 2, type: 'eighth', dots: 0 },
-  { ticks: 1, type: '16th', dots: 0 },
+  { ticks: 16, type: "whole", dots: 0 },
+  { ticks: 12, type: "half", dots: 1 },
+  { ticks: 8, type: "half", dots: 0 },
+  { ticks: 6, type: "quarter", dots: 1 },
+  { ticks: 4, type: "quarter", dots: 0 },
+  { ticks: 3, type: "eighth", dots: 1 },
+  { ticks: 2, type: "eighth", dots: 0 },
+  { ticks: 1, type: "16th", dots: 0 },
 ];
 
 /**
  * Parte una duración en figuras escribibles sin cruzar la barra de compás.
  * Devuelve trozos {tick, ticks}; los que van seguidos dentro de una nota se ligan.
  */
-export function splitDuration(tick: number, dur: number, bar: number): { tick: number; ticks: number }[] {
+export function splitDuration(
+  tick: number,
+  dur: number,
+  bar: number,
+): { tick: number; ticks: number }[] {
   const out: { tick: number; ticks: number }[] = [];
   let t = tick;
   let left = dur;
@@ -367,8 +556,11 @@ export function splitDuration(tick: number, dur: number, bar: number): { tick: n
     // La figura más larga que cabe y que empieza alineada con su propio valor (más fácil de leer).
     const pos = t % bar;
     const v =
-      NOTE_VALUES.find((nv) => nv.ticks <= room && pos % Math.min(nv.dots ? (nv.ticks * 2) / 3 : nv.ticks, 4) === 0) ??
-      NOTE_VALUES[NOTE_VALUES.length - 1];
+      NOTE_VALUES.find(
+        (nv) =>
+          nv.ticks <= room &&
+          pos % Math.min(nv.dots ? (nv.ticks * 2) / 3 : nv.ticks, 4) === 0,
+      ) ?? NOTE_VALUES[NOTE_VALUES.length - 1];
     out.push({ tick: t, ticks: v.ticks });
     t += v.ticks;
     left -= v.ticks;
@@ -377,16 +569,47 @@ export function splitDuration(tick: number, dur: number, bar: number): { tick: n
 }
 
 export function valueOf(ticks: number) {
-  return NOTE_VALUES.find((v) => v.ticks === ticks) ?? NOTE_VALUES[NOTE_VALUES.length - 1];
+  return (
+    NOTE_VALUES.find((v) => v.ticks === ticks) ??
+    NOTE_VALUES[NOTE_VALUES.length - 1]
+  );
 }
 
 /** Nombre de la armadura para la interfaz. */
 export function keyLabel(key: number, minor: boolean): string {
   const majors: Record<number, string> = {
-    [-7]: 'Cb', [-6]: 'Gb', [-5]: 'Db', [-4]: 'Ab', [-3]: 'Eb', [-2]: 'Bb', [-1]: 'F', 0: 'C', 1: 'G', 2: 'D', 3: 'A', 4: 'E', 5: 'B', 6: 'F#', 7: 'C#',
+    [-7]: "Cb",
+    [-6]: "Gb",
+    [-5]: "Db",
+    [-4]: "Ab",
+    [-3]: "Eb",
+    [-2]: "Bb",
+    [-1]: "F",
+    0: "C",
+    1: "G",
+    2: "D",
+    3: "A",
+    4: "E",
+    5: "B",
+    6: "F#",
+    7: "C#",
   };
   const minors: Record<number, string> = {
-    [-7]: 'Ab', [-6]: 'Eb', [-5]: 'Bb', [-4]: 'F', [-3]: 'C', [-2]: 'G', [-1]: 'D', 0: 'A', 1: 'E', 2: 'B', 3: 'F#', 4: 'C#', 5: 'G#', 6: 'D#', 7: 'A#',
+    [-7]: "Ab",
+    [-6]: "Eb",
+    [-5]: "Bb",
+    [-4]: "F",
+    [-3]: "C",
+    [-2]: "G",
+    [-1]: "D",
+    0: "A",
+    1: "E",
+    2: "B",
+    3: "F#",
+    4: "C#",
+    5: "G#",
+    6: "D#",
+    7: "A#",
   };
   return minor ? `${minors[key]}m` : majors[key];
 }

@@ -36,3 +36,8 @@ Diapasón animado, bucle A-B, velocidad, práctica progresiva, afinador, acordes
 | 6 | Más instrumentos | Hecho: bajo 4/5 cuerdas y ukelele (GCEA, Sol grave, barítono), 7 cuerdas. |
 | 7 | Instagram/TikTok | Hecho vía GuitarrIA Local v3 (solo viaja el id). |
 | 8 | App móvil | Pendiente: la web funciona en el móvil (micrófono incluido). |
+
+### Medición (scripts/qa.sh, 2026-11-11)
+- Ritmo: tempo correcto 100 %, compás 90 %, primer tiempo 70 %, nota en su semicorchea 96 %.
+- Canción completa en estéreo (voz, bajo y batería): F1 45 % → **92 %** con «Separar guitarra».
+- Notas (F1 medio) 94 % y acordes 82 %, sin cambios respecto a antes.

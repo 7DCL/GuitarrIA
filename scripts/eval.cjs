@@ -20,6 +20,7 @@ const CONFIGS = JSON.parse(process.env.CONFIGS || 'null') || [
     await page.waitForFunction(() => window.__result, null, { timeout: 1800000 });
     const rows = await page.evaluate(() => window.__result);
     if (rows.error) throw new Error(rows.error);
+    require('node:fs').writeFileSync('eval/data/last-run.json', JSON.stringify(rows));
     const pct = (x) => `${Math.round(x * 100)}%`.padStart(5);
     console.log('caso'.padEnd(24), 'config'.padEnd(16), 'cents', '   F1', ' prec', '  rec', ' notas');
     for (const r of rows.filter((x) => x.chords))
@@ -29,8 +30,6 @@ const CONFIGS = JSON.parse(process.env.CONFIGS || 'null') || [
     for (const r of rows.filter((x) => !x.chords && !x.rhythm))
       console.log(r.case.padEnd(24), r.config.padEnd(16), String(r.cents).padStart(5), pct(r.f1), pct(r.precision), pct(r.recall), `${r.got}/${r.truth}`);
     const byCfg = {};
-    for (const r of rows.filter((x) => x.rhythm))
-      console.log(r.case.padEnd(24), r.config.padEnd(16), `ritmo: ${String(r.rhythm.bpm).padStart(5)} BPM`, r.rhythm.tempoOk ? 'tempo ✓' : 'tempo ✗', r.rhythm.meterOk ? 'compás ✓' : 'compás ✗', r.rhythm.downbeatOk ? '1er tiempo ✓' : '1er tiempo ✗', `cuadrícula ${pct(r.rhythm.grid)}`);
     const band = rows.filter((x) => !x.chords && !x.rhythm && x.case.startsWith('banda_'));
     for (const r of band) console.log(`Canción completa (${r.case}) con ${r.config}: F1 ${pct(r.f1)}`);
     for (const r of rows.filter((x) => !x.chords && !x.rhythm && !x.case.startsWith('banda_'))) (byCfg[r.config] ??= []).push(r.f1);
@@ -54,6 +53,8 @@ const CONFIGS = JSON.parse(process.env.CONFIGS || 'null') || [
     if (chordAvg !== null && chordAvg < minChords) bad.push(`acordes ${pct(chordAvg)} < ${pct(minChords)}`);
     const minTempo = Number(process.env.MIN_TEMPO || 0);
     const minGrid = Number(process.env.MIN_GRID || 0);
+    const minBand = Number(process.env.MIN_BAND || 0);
+    for (const r of band) if (r.config.includes('separar') && r.f1 < minBand) bad.push(`canción completa separando ${pct(r.f1)} < ${pct(minBand)}`);
     if (tempoRate !== null && tempoRate < minTempo) bad.push(`tempo ${pct(tempoRate)} < ${pct(minTempo)}`);
     if (gridAvg !== null && gridAvg < minGrid) bad.push(`cuadrícula ${pct(gridAvg)} < ${pct(minGrid)}`);
     if (bad.length) {
