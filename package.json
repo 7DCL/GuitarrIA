@@ -23,6 +23,7 @@
     "vitest": "^2.1.9"
   },
   "dependencies": {
+    "@coderline/alphatab": "1.8",
     "@spotify/basic-pitch": "^1.0.1",
     "@tonejs/midi": "^2.0.28"
   },
