@@ -165,3 +165,14 @@ describe('filtro de ruido', () => {
     expect(rms(data.subarray(30000, 44000))).toBeGreaterThan(0.3);
   });
 });
+
+import { parseSocialLink } from '../src/local';
+describe('enlaces de Instagram y TikTok', () => {
+  it('extrae solo el id', () => {
+    expect(parseSocialLink('https://www.instagram.com/reel/C9xYz_AbC12/?igsh=abc')).toEqual({ site: 'ig', id: 'C9xYz_AbC12' });
+    expect(parseSocialLink('instagram.com/p/AbCdEf123/')).toEqual({ site: 'ig', id: 'AbCdEf123' });
+    expect(parseSocialLink('https://www.tiktok.com/@alguien.music/video/7234567890123456789?lang=es')).toEqual({ site: 'tt', id: '7234567890123456789' });
+    expect(parseSocialLink('https://www.youtube.com/watch?v=dQw4w9WgXcQ')).toBeNull();
+    expect(parseSocialLink('https://evil.com/reel/abcdef')).toBeNull();
+  });
+});

@@ -3,13 +3,17 @@ import { chordAt, chromagram, detectChords, detectKey, framesFromNotes, QUALITIE
 import type { Mode } from './cleanup';
 import { assignFingering, type Event, type Note } from './fingering';
 import { drawFretboard } from './fretboard';
-import { downloadWithLocal, localInfo, localOptedIn, separateWithLocal, setLocalOptIn, LOCAL_DOWNLOAD, LOCAL_PRO_DOWNLOAD, type LocalInfo } from './local';
+import { downloadWithLocal, localInfo, localOptedIn, localVersion, parseSocialLink, separateWithLocal, setLocalOptIn, LOCAL_DOWNLOAD, LOCAL_PRO_DOWNLOAD, type LocalInfo } from './local';
 import { AudioPlayer, ClockPlayer, YouTubePlayer, captureTabAudio, parseYouTubeId, type Player } from './player';
 import { pluck, renderDemo } from './synth';
 import { stringLabels, toAsciiTab } from './tab';
-import { chordName, noteName, setNotation, TUNINGS, type Notation } from './theory';
+import { chordName, INSTRUMENTS, noteName, pcName, setNotation, TUNINGS, type InstrumentId, type Notation } from './theory';
+import { analyzeRhythm, quantize, TPQ, withTempo, type QEvent, type Rhythm } from './rhythm';
+import { buildBars, toMusicXml, type Bar } from './notation';
+import { SheetView, musicXmlToGp, type SheetProfile } from './sheet';
+import { cloneEvents, deleteEvent, History, insertAfter, moveEvent, notesFromEvents, setDuration, setFret } from './edit';
 import { Tuner, type TunerReading } from './tuner';
-import { analyze, toNotes, type NoiseLevel, type Prepared } from './pipeline';
+import { analyze, toNotes, type NoiseLevel, type Prepared, type SeparateMode } from './pipeline';
 import { findVoicing, voicingSvg } from './voicing';
 import { encodeWav, download, formatTime, safeFileName } from './util';
 
@@ -54,6 +58,12 @@ const state = {
   current: -1,
   chordShown: null as ChordSegment | null | undefined,
   dirty: true, // hay que redibujar el diapasón aunque el tiempo no cambie
+  rhythm: null as Rhythm | null, // pulso, compás y tonalidad
+  q: [] as QEvent[], // eventos en la cuadrícula (ticks)
+  bars: [] as Bar[], // compases para la partitura
+  rhythmLocked: false, // el usuario fijó tempo/compás/tonalidad: no se vuelve a detectar solo
+  edited: false, // hay correcciones a mano
+  selected: -1, // evento elegido en el editor
 };
 
 let ctx: AudioContext | null = null;
@@ -85,10 +95,17 @@ const store = {
   },
 };
 
-for (const [key, t] of Object.entries(TUNINGS)) {
-  tuningSel.add(new Option(t.label, key));
-  $<HTMLSelectElement>('tunerTuning').add(new Option(t.label, key));
+const instrumentSel = $<HTMLSelectElement>('instrument');
+for (const [id, ins] of Object.entries(INSTRUMENTS)) instrumentSel.add(new Option(ins.label, id));
+/** Llena las afinaciones del instrumento elegido. */
+function fillTunings(instrument: InstrumentId, keep?: string) {
+  instrumentSel.value = instrument;
+  tuningSel.innerHTML = '';
+  for (const [key, t] of Object.entries(TUNINGS)) if (t.instrument === instrument) tuningSel.add(new Option(t.label, key));
+  if (keep && TUNINGS[keep]?.instrument === instrument) tuningSel.value = keep;
 }
+fillTunings('guitar');
+for (const [key, t] of Object.entries(TUNINGS)) $<HTMLSelectElement>('tunerTuning').add(new Option(t.label, key));
 
 // ---------- Mensajes y estado ocupado ----------
 function showError(msg: string | null) {
@@ -112,7 +129,7 @@ function setProgress(fraction: number | null, label: string) {
 // Cada carga o análisis recibe un número: si empieza otro, el resultado del anterior se descarta.
 let generation = 0;
 let abortLocal: AbortController | null = null;
-const BUSY_IDS = ['ytLoad', 'pick', 'record', 'demo', 'mode', 'noise', 'sens', 'tuning', 'capo', 'impBtn'];
+const BUSY_IDS = ['ytLoad', 'pick', 'record', 'demo', 'mode', 'noise', 'separate', 'sens', 'instrument', 'tuning', 'capo', 'impBtn'];
 function setBusy(on: boolean) {
   for (const id of BUSY_IDS) ($(id) as HTMLButtonElement).disabled = on && !(id === 'record' && recorder);
   if (!on) progressRow.hidden = true;
@@ -251,7 +268,9 @@ $('ytForm').addEventListener('submit', async (e) => {
   showError(null);
   const id = parseYouTubeId($<HTMLInputElement>('ytUrl').value);
   if (!id) {
-    showError('No reconozco ese enlace de YouTube. Copia la dirección del video (youtube.com/watch?v=… o youtu.be/…).');
+    const social = parseSocialLink($<HTMLInputElement>('ytUrl').value);
+    if (social) return loadSocial(social.site, social.id);
+    showError('No reconozco ese enlace. Copia la dirección del video de YouTube (youtube.com/watch?v=… o youtu.be/…), de un reel de Instagram o de un video de TikTok (tiktok.com/@usuario/video/…).');
     return;
   }
   if (capture) await finishCapture(false);
@@ -299,6 +318,41 @@ function showCapture(yt: YouTubePlayer | Error | null) {
   ytStart.hidden = false;
   $('ytPanel').classList.remove('compact');
   if (!ytStatus.textContent) ytStatus.textContent = `Dura ${formatTime(yt.duration)}: escuchándolo, la transcripción tarda lo mismo que el video.`;
+}
+
+/** Instagram y TikTok: no se pueden incrustar ni escuchar desde la web, así que se bajan con GuitarrIA Local. */
+async function loadSocial(site: 'ig' | 'tt', id: string) {
+  const name = site === 'ig' ? 'Instagram' : 'TikTok';
+  if (capture) await finishCapture(false);
+  const version = await localVersion();
+  if (!version) {
+    $('ytPanel').hidden = true;
+    showError(`Los videos de ${name} se transcriben con GuitarrIA Local (gratis, para Windows): descárgalo desde ${LOCAL_DOWNLOAD}, ábrelo y vuelve a pegar el enlace. También puedes guardar el video y arrastrarlo aquí.`);
+    return;
+  }
+  setLocalOptIn(true);
+  if (version < 4) {
+    showError(`Tu GuitarrIA Local es antiguo: vuelve a descargarlo para usar ${name}.`);
+    return;
+  }
+  const my = ++generation;
+  setBusy(true);
+  abortLocal = new AbortController();
+  try {
+    const { blob, title } = await downloadWithLocal(
+      id,
+      (f) => my === generation && setProgress(f < 0 ? null : f, f < 0 ? `GuitarrIA Local está bajando el audio de ${name}…` : `Recibiendo audio… ${Math.round(f * 100)}%`),
+      abortLocal.signal,
+      false,
+      site,
+    );
+    if (my !== generation) return;
+    await loadBlob(blob, title, undefined, 0, my);
+  } catch (err) {
+    if (my !== generation) return;
+    setBusy(false);
+    if ((err as Error).name !== 'AbortError') showError(`GuitarrIA Local no pudo bajar el video de ${name}: ${(err as Error).message}`);
+  }
 }
 
 /** Baja el audio con GuitarrIA Local y lo transcribe. Devuelve false si no está disponible o falla. */
@@ -463,6 +517,7 @@ async function loadBlob(blob: Blob, name: string, source?: YouTubePlayer, offset
   state.buffer = guitarBuffer ?? buffer;
   state.chordBuffer = guitarBuffer ? buffer : null;
   state.prepared = state.chordPrepared = null;
+  resetEditing();
   setRate(state.rate);
   player.volume = Number($<HTMLInputElement>('volAudio').value);
   playBtn.textContent = '▶';
@@ -480,7 +535,7 @@ async function analyzeBuffer(my = ++generation): Promise<boolean> {
   setProgress(0, 'La IA está escuchando… (la primera vez descarga el modelo)');
   const lowest = Math.min(...currentTuning());
   try {
-    const prepared = await analyze(state.buffer, { noise: noiseSel.value as NoiseLevel, autoTune: true, lowestMidi: lowest }, (p, what) => {
+    const prepared = await analyze(state.buffer, { noise: noiseSel.value as NoiseLevel, autoTune: true, lowestMidi: lowest, separate: state.chordBuffer ? 'off' : ($<HTMLSelectElement>('separate').value as SeparateMode) }, (p, what) => {
       if (my === generation) setProgress(p, `${what}… ${Math.round(p * 100)}%`);
     });
     if (my !== generation) return false;
@@ -515,8 +570,15 @@ const capo = () => {
   return Number.isFinite(v) ? Math.max(0, Math.min(12, v)) : 0;
 };
 const currentTuning = () => TUNINGS[tuningSel.value].strings;
+const currentInstrument = () => INSTRUMENTS[TUNINGS[tuningSel.value].instrument];
 
 function refreshNotes() {
+  if (state.prepared && state.edited) {
+    // Rehacer la transcripción pisa las correcciones: se guardan para poder deshacer.
+    history.push(snapshot());
+    state.edited = false;
+    flashRhythm('Transcripción rehecha: «Deshacer» recupera tus correcciones');
+  }
   if (state.prepared)
     state.notes = toNotes(state.prepared, {
       mode: modeSel.value as Mode,
@@ -543,7 +605,25 @@ function refreshChords() {
 
 function refreshFingering() {
   const tuning = currentTuning();
-  state.events = assignFingering(state.notes, { tuning, capo: capo() });
+  setEvents(assignFingering(state.notes, { tuning, capo: capo(), maxFret: currentInstrument().maxFret }), !state.rhythmLocked);
+}
+
+/** Nuevos eventos digitados: tab, diapasón, ritmo y partitura. */
+function setEvents(events: Event[], detectRhythm: boolean) {
+  state.events = events;
+  mapChordStarts();
+  const maxFret = Math.max(0, ...state.events.flatMap((e) => e.notes.map((n) => n.fret)));
+  state.frets = Math.min(22, Math.max(12, maxFret + 2));
+  state.current = -1;
+  state.chordShown = undefined;
+  state.dirty = true;
+  renderTab();
+  refreshRhythm(detectRhythm);
+  if (state.selected >= state.events.length) state.selected = state.events.length - 1;
+  if (editInput.checked) selectEvent(state.selected);
+}
+
+function mapChordStarts() {
   // Nombre del acorde en la columna donde empieza cada tramo.
   state.chordStarts = state.events.map(() => null);
   let i = 0;
@@ -552,12 +632,6 @@ function refreshFingering() {
     while (i < state.events.length && state.events[i].start < seg.start - 0.08) i++;
     if (i < state.events.length && state.events[i].start < seg.end) state.chordStarts[i] = seg;
   }
-  const maxFret = Math.max(0, ...state.events.flatMap((e) => e.notes.map((n) => n.fret)));
-  state.frets = Math.min(22, Math.max(12, maxFret + 2));
-  state.current = -1;
-  state.chordShown = undefined;
-  state.dirty = true;
-  renderTab();
 }
 
 const segName = (s: ChordSegment) => chordName(s.root, s.quality, s.bass);
@@ -579,7 +653,7 @@ function renderTab() {
     const seg = state.chordStarts[i];
     const desc = ev.notes.map((n) => `cuerda ${tuning.length - n.string} traste ${n.fret}`).join(', ');
     cols.push(
-      `<div class="col" role="listitem" tabindex="-1" data-i="${i}" aria-label="${formatTime(ev.start)}: ${desc}"><div class="ch${seg?.edited ? ' edited' : ''}"${seg ? ' title="Pulsa para corregir"' : ''}>${seg ? segName(seg) : ''}</div>${cells}</div>`,
+      `<div class="col${i === state.selected && editInput.checked ? ' sel' : ''}" role="listitem" tabindex="-1" data-i="${i}" aria-label="${formatTime(ev.start)}: ${desc}"><div class="ch${seg?.edited ? ' edited' : ''}"${seg ? ' title="Pulsa para corregir"' : ''}>${seg ? segName(seg) : ''}</div>${cells}</div>`,
     );
   });
   tabEl.innerHTML = cols.join('');
@@ -593,16 +667,16 @@ tabEl.addEventListener('click', (e) => {
   // Pulsar el nombre del acorde encima de la tab abre el corrector.
   const seg = col && (e.target as HTMLElement).closest('.ch') ? state.chordStarts[Number(col.dataset.i)] : null;
   if (seg) return openChordEditor(seg);
-  if (col) seek(state.events[Number(col.dataset.i)].start - 0.05);
+  if (col) pickEvent(Number(col.dataset.i));
 });
 // Con el teclado: ← → recorren las columnas de la tab, Intro salta a la elegida.
 tabEl.addEventListener('keydown', (e) => {
   if (!state.events.length || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
   e.preventDefault();
   e.stopPropagation();
-  const i = Math.max(0, state.current);
+  const i = Math.max(0, editInput.checked && state.selected >= 0 ? state.selected : state.current);
   const next = e.key === 'Home' ? 0 : e.key === 'End' ? state.events.length - 1 : i + (e.key === 'ArrowRight' ? 1 : -1);
-  seek(state.events[Math.max(0, Math.min(state.events.length - 1, next))].start - 0.01);
+  pickEvent(Math.max(0, Math.min(state.events.length - 1, next)), 0.01);
 });
 
 function renderChordList() {
@@ -693,7 +767,10 @@ dialog.addEventListener('close', () => {
   const targets =
     seg.root >= 0 && $<HTMLInputElement>('edAll').checked ? state.chords.filter((s) => s.root >= 0 && segName(s) === old) : [seg];
   for (const s of targets) Object.assign(s, { root, quality, bass, name: root < 0 ? 'N' : chordName(root, quality, bass), edited: true });
-  refreshFingering();
+  // Solo cambian los nombres: la digitación (con las correcciones a mano) se conserva.
+  mapChordStarts();
+  renderTab();
+  requantize();
   renderChordList();
   state.chordShown = undefined;
 });
@@ -717,14 +794,19 @@ function showChord(t: number) {
   $('chordNext').textContent = next ? segName(next) : '–';
 }
 
-tuningSel.addEventListener('change', () => {
+instrumentSel.addEventListener('change', () => {
+  fillTunings(instrumentSel.value as InstrumentId);
+  onTuningChange();
+});
+tuningSel.addEventListener('change', onTuningChange);
+function onTuningChange() {
   // El filtro de graves depende de la cuerda más grave (guitarra vs. bajo): si cambia mucho, se vuelve a analizar.
   if (state.buffer && noiseSel.value !== 'off' && Math.abs(Math.min(...currentTuning()) - state.analyzedLowest) >= 5) analyzeBuffer();
   else {
     refreshNotes();
     renderChordList();
   }
-});
+}
 capoInput.addEventListener('change', () => {
   capoInput.value = String(capo());
   refreshNotes();
@@ -737,6 +819,7 @@ sensInput.addEventListener('input', () => ($('sensVal').textContent = `${Math.ro
 sensInput.addEventListener('change', refreshNotes);
 modeSel.addEventListener('change', refreshNotes);
 noiseSel.addEventListener('change', () => analyzeBuffer());
+$('separate').addEventListener('change', () => analyzeBuffer());
 namesInput.addEventListener('change', () => (state.dirty = true));
 
 // ---------- Reproductor ----------
@@ -916,6 +999,7 @@ function render() {
 
   const idx = eventIndexAt(t);
   if (idx !== state.current) {
+    sheet?.highlight(idx);
     tabEl.querySelector('.col.now')?.classList.remove('now');
     const col = tabEl.querySelector<HTMLElement>(`.col[data-i="${idx}"]`);
     if (col) {
@@ -957,21 +1041,25 @@ $('expMid').addEventListener('click', () => {
   const midi = new Midi();
   midi.header.name = state.name;
   const track = midi.addTrack();
-  track.name = 'Guitarra';
-  track.instrument.number = 25; // guitarra acústica (acero)
+  track.name = currentInstrument().name;
+  track.instrument.number = currentInstrument().gm;
   for (const n of state.notes) track.addNote({ midi: n.midi, time: n.start, duration: n.duration, velocity: Math.min(1, n.velocity) });
   download(`${state.name}.mid`, new Uint8Array(midi.toArray()), 'audio/midi');
 });
 $('expJson').addEventListener('click', () => {
   const data = {
     app: 'GuitarrIA',
-    version: 2,
+    version: 3,
     name: state.name,
     tuning: tuningSel.value,
     capo: capo(),
     mode: modeSel.value,
     notes: state.notes,
     chords: state.chords.filter((c) => c.root >= 0),
+    // Desde la versión 3: la digitación (con las correcciones a mano) y el ritmo.
+    events: state.events,
+    rhythm: state.rhythm,
+    rhythmLocked: state.rhythmLocked,
   };
   download(`${state.name}.json`, JSON.stringify(data), 'application/json');
 });
@@ -1004,7 +1092,8 @@ impInput.addEventListener('change', async () => {
     state.buffer = null;
     state.offset = 0;
     state.notes = data.notes.map((n: Note) => ({ start: n.start, duration: n.duration, midi: n.midi, velocity: n.velocity }));
-    if (TUNINGS[data.tuning]) tuningSel.value = data.tuning;
+    if (TUNINGS[data.tuning]) fillTunings(TUNINGS[data.tuning].instrument, data.tuning);
+    resetEditing();
     if (data.mode === 'lead' || data.mode === 'chords') modeSel.value = data.mode;
     capoInput.value = String(Math.max(0, Math.min(12, Math.round(Number(data.capo) || 0))));
     $('tuneInfo').textContent = 'Proyecto abierto (sin audio: usa el sintetizado para escucharlo)';
@@ -1026,12 +1115,430 @@ impInput.addEventListener('change', async () => {
     setRate(state.rate);
     playBtn.textContent = '▶';
     workspace.hidden = false;
-    refreshFingering();
+    const okEvent = (e: Event) =>
+      e && Number.isFinite(e.start) && Number.isFinite(e.end) && Array.isArray(e.notes) && e.notes.length > 0 &&
+      e.notes.every((n) => ok(n) && Number.isInteger(n.string) && n.string >= 0 && n.string < currentTuning().length && Number.isInteger(n.fret) && n.fret >= 0 && n.fret <= 30);
+    const okRhythm = (r: Rhythm) =>
+      r && Array.isArray(r.beats) && r.beats.length >= 2 && r.beats.every(Number.isFinite) && [2, 3, 4, 6].includes(r.beatsPerBar) &&
+      [4, 8].includes(r.beatUnit) && Number.isInteger(r.firstBar) && r.firstBar >= 0 && r.firstBar < r.beats.length && Number.isInteger(r.key) && Math.abs(r.key) <= 7;
+    if (okRhythm(data.rhythm)) {
+      state.rhythm = { ...data.rhythm, bpm: Number(data.rhythm.bpm) || 120, minor: !!data.rhythm.minor };
+      state.rhythmLocked = !!data.rhythmLocked;
+    }
+    if (Array.isArray(data.events) && data.events.length && data.events.every(okEvent)) {
+      setEvents(cloneEvents(data.events), !state.rhythm);
+      state.notes = notesFromEvents(state.events);
+    } else refreshFingering();
     resetLoop();
     seek(0);
   } catch {
     showError('Ese archivo no es un proyecto de GuitarrIA válido.');
   }
+});
+
+// ---------- Ritmo: tempo, compás y tonalidad ----------
+const bpmInput = $<HTMLInputElement>('bpm');
+const meterSel = $<HTMLSelectElement>('meter');
+const keySel = $<HTMLSelectElement>('keySel');
+
+/** Tónica de una armadura: Sol mayor (1♯), Mi menor (1♯)… con la notación elegida. */
+function keyText(key: number, minor: boolean): string {
+  const pc = (((key * 7 + (minor ? 9 : 0)) % 12) + 12) % 12;
+  const latin = notationSel.value.startsWith('latin');
+  const n: Notation = latin ? (key < 0 ? 'latinFlat' : 'latin') : key < 0 ? 'flat' : 'sharp';
+  const acc = key === 0 ? '' : ` · ${Math.abs(key)}${key > 0 ? '♯' : '♭'}`;
+  return `${pcName(pc, n)} ${minor ? 'menor' : 'mayor'}${acc}`;
+}
+function fillKeys() {
+  const v = keySel.value;
+  keySel.innerHTML = '';
+  for (const minor of [false, true]) for (let k = -7; k <= 7; k++) keySel.add(new Option(keyText(k, minor), `${k}:${minor ? 'm' : 'M'}`));
+  if (v) keySel.value = v;
+}
+fillKeys();
+notationSel.addEventListener('change', () => {
+  fillKeys();
+  renderSheet();
+});
+
+const songLength = () => Math.max(player.duration || 0, ...state.events.map((e) => e.end)) + 1;
+
+function refreshRhythm(detect: boolean) {
+  if (!state.events.length) {
+    state.rhythm = null;
+    state.q = [];
+    state.bars = [];
+    renderRhythmBar();
+    return;
+  }
+  if (detect || !state.rhythm) {
+    const chords = state.chords.filter((c) => c.root >= 0);
+    // Para la tonalidad cuentan las notas y también los acordes (raíz, tercera y quinta).
+    const chordTones = chords.flatMap((c) => {
+      const minor = c.quality.startsWith('m') && !c.quality.startsWith('maj');
+      const third = minor || c.quality.startsWith('dim') ? 3 : c.quality.startsWith('sus') || c.quality === '5' ? 7 : 4;
+      return [0, third, 7].map((iv, k) => ({ midi: 48 + ((c.root + iv) % 12), duration: (c.end - c.start) * (k ? 0.6 : 1), velocity: 0.8 }));
+    });
+    state.rhythm = analyzeRhythm(state.events, chords.map((c) => c.start), [...state.notes, ...chordTones]);
+  }
+  requantize();
+}
+
+/** Recalcula la cuadrícula y los compases con el ritmo actual (sin volver a detectarlo). */
+function requantize() {
+  const r = state.rhythm;
+  if (!r) return;
+  state.q = quantize(state.events, r);
+  state.bars = buildBars(state.events, state.q, r, state.chords);
+  renderRhythmBar();
+  renderSheet();
+}
+
+let rhythmMsgTimer = 0;
+function flashRhythm(msg: string) {
+  $('rhythmInfo').textContent = msg;
+  clearTimeout(rhythmMsgTimer);
+  rhythmMsgTimer = window.setTimeout(renderRhythmBar, 4000);
+}
+
+function renderRhythmBar() {
+  const r = state.rhythm;
+  bpmInput.value = r ? String(Math.round(r.bpm)) : '';
+  meterSel.value = r ? `${r.beatsPerBar}/${r.beatUnit}` : '4/4';
+  if (r) keySel.value = `${r.key}:${r.minor ? 'm' : 'M'}`;
+  $('rhythmInfo').textContent = r ? `${state.bars.length} compases${state.rhythmLocked ? '' : ' · detectado automáticamente'}` : '';
+}
+
+/** Cambia el ritmo a mano (se puede deshacer y ya no se vuelve a detectar solo). */
+function changeRhythm(f: (r: Rhythm) => Rhythm) {
+  if (!state.rhythm) return;
+  history.push(snapshot());
+  state.rhythm = f(state.rhythm);
+  state.rhythmLocked = true;
+  requantize();
+  updateEditor();
+}
+const clampBpm = (v: number) => Math.max(30, Math.min(300, v));
+bpmInput.addEventListener('change', () => {
+  const v = Number(bpmInput.value);
+  if (!Number.isFinite(v) || v <= 0) return renderRhythmBar();
+  changeRhythm((r) => withTempo(r, clampBpm(v), songLength()));
+});
+$('bpmHalf').addEventListener('click', () => changeRhythm((r) => withTempo(r, clampBpm(r.bpm / 2), songLength())));
+$('bpmDouble').addEventListener('click', () => changeRhythm((r) => withTempo(r, clampBpm(r.bpm * 2), songLength())));
+meterSel.addEventListener('change', () => {
+  const [n, d] = meterSel.value.split('/').map(Number);
+  changeRhythm((r) => ({ ...r, beatsPerBar: n, beatUnit: d as 4 | 8 }));
+});
+keySel.addEventListener('change', () => {
+  const [k, m] = keySel.value.split(':');
+  changeRhythm((r) => ({ ...r, key: Number(k), minor: m === 'm' }));
+});
+$('rhythmAuto').addEventListener('click', () => {
+  if (!state.events.length) return;
+  history.push(snapshot());
+  state.rhythmLocked = false;
+  refreshRhythm(true);
+  updateEditor();
+});
+
+// Marcar el pulso: con la canción sonando, cada pulsación cae en un tiempo; la primera es el primer tiempo del compás.
+let taps: number[] = [];
+function tap() {
+  const t = player.paused ? performance.now() / 1000 : player.time;
+  if (taps.length && (t - taps[taps.length - 1] > 2.5 || t <= taps[taps.length - 1])) taps = [];
+  taps.push(t);
+  if (taps.length < 4) {
+    flashRhythm(`Sigue marcando el pulso… (${taps.length}/4)`);
+    return;
+  }
+  const period = (taps[taps.length - 1] - taps[0]) / (taps.length - 1);
+  const bpm = clampBpm(60 / period);
+  const anchor = player.paused ? undefined : taps[0];
+  if (taps.length === 4) history.push(snapshot());
+  state.rhythm = withTempo(state.rhythm!, bpm, songLength(), anchor);
+  state.rhythmLocked = true;
+  requantize();
+  flashRhythm(`Tempo marcado: ${Math.round(bpm)} BPM${anchor !== undefined ? ' (el primer toque es el primer tiempo)' : ''}`);
+}
+$('tap').addEventListener('click', () => state.rhythm && tap());
+
+// ---------- Partitura ----------
+type SheetMode = 'quick' | SheetProfile;
+const sheetEl = $('sheet');
+const sheetMsg = $('sheetMsg');
+let sheet: SheetView | null = null;
+let sheetMode: SheetMode = 'quick';
+let sheetTimer = 0;
+
+/** XML de la partitura. Para la vista previa (alphaTab) el pentagrama declara tantas líneas como cuerdas. */
+function currentXml(preview = false): string {
+  const ins = currentInstrument();
+  return toMusicXml(state.bars, state.rhythm!, {
+    title: state.name,
+    tuning: currentTuning(),
+    capo: capo(),
+    instrument: { name: ins.name, program: ins.gm + 1, clef: ins.clef },
+    staffLines: preview ? currentTuning().length : undefined,
+  });
+}
+
+function renderSheet() {
+  if (sheetMode === 'quick' || !state.rhythm || !state.bars.length) return;
+  clearTimeout(sheetTimer);
+  // Varias ediciones seguidas: se dibuja una sola vez.
+  sheetTimer = window.setTimeout(() => {
+    if (sheetMode === 'quick' || !state.rhythm) return;
+    sheet ??= new SheetView(sheetEl, (i) => pickEvent(i));
+    sheet.onRendered = () => {
+      sheetMsg.hidden = true;
+      sheet!.select(editInput.checked ? state.selected : -1);
+    };
+    sheet.render(currentXml(true), currentTuning(), capo(), sheetMode).catch((err) => {
+      console.error(err);
+      sheetMsg.hidden = false;
+      sheetMsg.textContent = 'No se pudo dibujar la partitura. Prueba la tab rápida.';
+    });
+  }, 60);
+}
+
+function setSheetMode(mode: SheetMode) {
+  sheetMode = mode;
+  store.set('sheet', mode);
+  document.querySelectorAll<HTMLButtonElement>('.seg[data-sheet]').forEach((b) => {
+    b.classList.toggle('on', b.dataset.sheet === mode);
+    b.setAttribute('aria-pressed', String(b.dataset.sheet === mode));
+  });
+  tabEl.hidden = mode !== 'quick';
+  sheetEl.hidden = mode === 'quick';
+  if (mode !== 'quick') {
+    if (!sheet?.score) sheetMsg.hidden = false;
+    renderSheet();
+  }
+}
+document.querySelectorAll<HTMLButtonElement>('.seg[data-sheet]').forEach((b) => b.addEventListener('click', () => setSheetMode(b.dataset.sheet as SheetMode)));
+setSheetMode((['quick', 'scoretab', 'score', 'tab'] as const).find((m) => m === store.get('sheet')) ?? 'quick');
+
+// ---------- Editor ----------
+type Snapshot = { events: Event[]; rhythm: Rhythm | null; locked: boolean };
+const history = new History<Snapshot>();
+const snapshot = (): Snapshot => ({
+  events: cloneEvents(state.events),
+  rhythm: state.rhythm && { ...state.rhythm, beats: [...state.rhythm.beats] },
+  locked: state.rhythmLocked,
+});
+const editInput = $<HTMLInputElement>('editMode');
+const editorEl = $('editor');
+const edDur = $<HTMLSelectElement>('edDur');
+
+function resetEditing() {
+  history.clear();
+  state.edited = false;
+  state.rhythmLocked = false;
+  state.rhythm = null;
+  state.selected = -1;
+  updateUndo();
+}
+
+/** Clic en una nota (tab o partitura): salta a ella y, editando, la elige. */
+function pickEvent(i: number, lead = 0.05) {
+  const ev = state.events[i];
+  if (!ev) return;
+  seek(ev.start - lead);
+  if (editInput.checked) selectEvent(i);
+}
+
+function selectEvent(i: number) {
+  state.selected = i;
+  tabEl.querySelector('.col.sel')?.classList.remove('sel');
+  if (editInput.checked && i >= 0) tabEl.querySelector(`.col[data-i="${i}"]`)?.classList.add('sel');
+  sheet?.select(editInput.checked ? i : -1);
+  updateEditor();
+}
+
+function updateUndo() {
+  ($('undo') as HTMLButtonElement).disabled = !history.canUndo;
+  ($('redo') as HTMLButtonElement).disabled = !history.canRedo;
+}
+
+function updateEditor() {
+  updateUndo();
+  if (!editInput.checked) return;
+  const i = state.selected;
+  const ev = state.events[i];
+  const tuning = currentTuning();
+  const labels = stringLabels(tuning);
+  const disabled = !ev;
+  for (const id of ['edDur', 'edLeft', 'edRight', 'edHear', 'edAdd', 'edDel']) ($(id) as HTMLButtonElement).disabled = disabled;
+  const qi = state.q.find((x) => x.index === i);
+  if (!ev || !qi || !state.rhythm) {
+    $('edInfo').textContent = 'Elige una nota en la tab o la partitura';
+    $('edFrets').innerHTML = '';
+    return;
+  }
+  const bt = state.rhythm.beatUnit === 8 ? (state.rhythm.beatsPerBar * TPQ) / 2 : state.rhythm.beatsPerBar * TPQ;
+  const bar = Math.floor(qi.tick / bt) + 1;
+  const beat = ((qi.tick % bt) / TPQ + 1).toFixed(2).replace(/\.00$/, '').replace(/0$/, '');
+  const names = ev.notes.map((n) => noteName(n.midi, true)).join(' + ');
+  $('edInfo').textContent = `Nota ${i + 1} de ${state.events.length} · compás ${bar}, tiempo ${beat} · ${formatTime(ev.start, true)} · ${names}`;
+  $('edFrets').innerHTML = tuning
+    .map((_, s) => s)
+    .reverse()
+    .map((s) => {
+      const n = ev.notes.find((x) => x.string === s);
+      return `<label class="ed-fret"><span>${labels[s]}</span><input type="number" min="0" max="${currentInstrument().maxFret}" step="1" inputmode="numeric" data-s="${s}" value="${n ? n.fret : ''}" aria-label="Cuerda ${tuning.length - s}" /></label>`;
+    })
+    .join('');
+  const options = [...edDur.options].map((o) => Number(o.value));
+  edDur.value = String(options.reduce((best, v) => (Math.abs(v - qi.dur) < Math.abs(best - qi.dur) ? v : best), options[0]));
+}
+
+/** Aplica una edición: guarda el estado anterior para deshacer y lo redibuja todo. */
+function applyEdit(events: Event[], select = state.selected) {
+  history.push(snapshot());
+  state.edited = true;
+  commitEvents(events, select);
+}
+function commitEvents(events: Event[], select: number) {
+  state.events = events;
+  state.notes = notesFromEvents(events);
+  mapChordStarts();
+  state.current = -1;
+  state.dirty = true;
+  renderTab();
+  requantize();
+  selectEvent(Math.max(-1, Math.min(select, state.events.length - 1)));
+}
+
+function restore(s: Snapshot | null) {
+  if (!s) return;
+  state.rhythm = s.rhythm;
+  state.rhythmLocked = s.locked;
+  state.edited = true;
+  commitEvents(s.events, state.selected);
+  updateUndo();
+}
+$('undo').addEventListener('click', () => restore(history.undo(snapshot())));
+$('redo').addEventListener('click', () => restore(history.redo(snapshot())));
+
+editInput.addEventListener('change', () => {
+  editorEl.hidden = !editInput.checked;
+  tabEl.classList.toggle('editing', editInput.checked);
+  if (editInput.checked && state.selected < 0) state.selected = Math.max(0, state.current);
+  selectEvent(editInput.checked ? state.selected : state.selected);
+  if (!editInput.checked) tabEl.querySelector('.col.sel')?.classList.remove('sel');
+});
+
+$('edFrets').addEventListener('change', (e) => {
+  const input = e.target as HTMLInputElement;
+  if (!input.dataset.s || state.selected < 0) return;
+  const raw = input.value.trim();
+  const fret = raw === '' ? null : Math.round(Number(raw));
+  if (fret !== null && (!Number.isFinite(fret) || fret < 0 || fret > currentInstrument().maxFret)) {
+    updateEditor();
+    return;
+  }
+  const s = Number(input.dataset.s);
+  const cur = state.events[state.selected]?.notes.find((n) => n.string === s)?.fret ?? null;
+  if (cur === fret) return; // sin cambios (el navegador repite «change» al salir del campo)
+  const before = state.events.length;
+  const next = setFret(state.events, state.selected, Number(input.dataset.s), fret, currentTuning(), capo());
+  applyEdit(next, next.length < before ? state.selected - 1 : state.selected);
+  hear();
+  // Sigue en la misma cuerda para escribir varias seguidas.
+  $('edFrets').querySelector<HTMLInputElement>(`input[data-s="${input.dataset.s}"]`)?.focus();
+});
+edDur.addEventListener('change', () => {
+  if (state.selected >= 0 && state.rhythm) applyEdit(setDuration(state.events, state.q, state.rhythm, state.selected, Number(edDur.value)));
+});
+$('edLeft').addEventListener('click', () => state.rhythm && applyEdit(moveEvent(state.events, state.q, state.rhythm, state.selected, -1)));
+$('edRight').addEventListener('click', () => state.rhythm && applyEdit(moveEvent(state.events, state.q, state.rhythm, state.selected, 1)));
+$('edAdd').addEventListener('click', () => {
+  if (state.selected < 0 || !state.rhythm) return;
+  const r = insertAfter(state.events, state.q, state.rhythm, state.selected);
+  if (r.index === state.selected) return flashRhythm('No hay sitio: acorta la nota o muévela antes de añadir otra');
+  applyEdit(r.events, r.index);
+});
+$('edDel').addEventListener('click', () => state.selected >= 0 && applyEdit(deleteEvent(state.events, state.selected), state.selected));
+$('edHear').addEventListener('click', () => hear());
+function hear() {
+  const ev = state.events[state.selected];
+  if (!ev) return;
+  const ac = audioCtx();
+  ac.resume();
+  const out = ac.createGain();
+  out.gain.value = 0.8;
+  out.connect(ac.destination);
+  ev.notes.forEach((n) => pluck(ac, out, n.midi, Math.min(1.5, Math.max(0.3, ev.end - ev.start)), 0.8));
+}
+
+// Atajos de edición (fuera de los campos de texto).
+document.addEventListener('keydown', (e) => {
+  const el = e.target as HTMLElement;
+  if ($('view-transcribe').hidden || workspace.hidden || el.matches('input, select, textarea')) return;
+  const mod = e.ctrlKey || e.metaKey;
+  if (mod && e.key.toLowerCase() === 'z' && !e.shiftKey) {
+    e.preventDefault();
+    $('undo').click();
+  } else if (mod && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) {
+    e.preventDefault();
+    $('redo').click();
+  } else if (!mod && (e.key === 't' || e.key === 'T') && state.rhythm) tap();
+  else if (editInput.checked && !mod && state.selected >= 0) {
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault();
+      $('edDel').click();
+    } else if (e.key === 'Insert') $('edAdd').click();
+    else if (e.key === 'h' || e.key === 'H') hear();
+  }
+});
+
+// ---------- Exportar partitura ----------
+function needScore(): boolean {
+  if (state.rhythm && state.bars.length) return true;
+  showError('Primero transcribe una canción.');
+  return false;
+}
+$('expXml').addEventListener('click', () => {
+  if (needScore()) download(`${state.name}.musicxml`, currentXml(), 'application/vnd.recordare.musicxml+xml');
+});
+$('expGp').addEventListener('click', async () => {
+  if (!needScore()) return;
+  try {
+    download(`${state.name}.gp`, new Uint8Array(await musicXmlToGp(currentXml(true), currentTuning(), capo())), 'application/octet-stream');
+  } catch (err) {
+    console.error(err);
+    showError('No se pudo crear el archivo de Guitar Pro.');
+  }
+});
+$('expPdf').addEventListener('click', async () => {
+  if (!needScore()) return;
+  if (sheetMode === 'quick') setSheetMode('scoretab');
+  // Espera a que la partitura esté dibujada (como mucho 15 s).
+  const t0 = performance.now();
+  await new Promise((r) => setTimeout(r, 100));
+  while ((!sheet?.score || sheet.rendering) && performance.now() - t0 < 15000) await new Promise((r) => setTimeout(r, 100));
+  await sheet?.print();
+});
+$('expMidQ').addEventListener('click', () => {
+  if (!needScore()) return;
+  const r = state.rhythm!;
+  const midi = new Midi();
+  midi.header.name = state.name;
+  midi.header.setTempo(r.bpm);
+  midi.header.timeSignatures.push({ ticks: 0, timeSignature: [r.beatsPerBar, r.beatUnit] });
+  // @tonejs/midi guarda la armadura por el nombre de la mayor con esas alteraciones.
+  const KEYS = ['Cb', 'Gb', 'Db', 'Ab', 'Eb', 'Bb', 'F', 'C', 'G', 'D', 'A', 'E', 'B', 'F#', 'C#'];
+  midi.header.keySignatures.push({ ticks: 0, key: KEYS[r.key + 7], scale: r.minor ? 'minor' : 'major' });
+  midi.header.update();
+  const track = midi.addTrack();
+  track.name = currentInstrument().name;
+  track.instrument.number = currentInstrument().gm;
+  const ppq = midi.header.ppq;
+  for (const x of state.q)
+    for (const n of state.events[x.index].notes)
+      track.addNote({ midi: n.midi, ticks: (x.tick * ppq) / TPQ, durationTicks: (x.dur * ppq) / TPQ, velocity: Math.min(1, n.velocity) });
+  download(`${state.name}-cuantizado.mid`, new Uint8Array(midi.toArray()), 'audio/midi');
 });
 
 // ---------- Afinador ----------

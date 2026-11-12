@@ -28,7 +28,7 @@
     <main>
       <section id="view-transcribe" class="view">
         <form id="ytForm" class="yt-form">
-          <input id="ytUrl" type="text" inputmode="url" placeholder="Pega un enlace de YouTube…" autocomplete="off" aria-label="Enlace de YouTube" />
+          <input id="ytUrl" type="text" inputmode="url" placeholder="Pega un enlace de YouTube, Instagram o TikTok…" autocomplete="off" aria-label="Enlace del video" />
           <button id="ytLoad" class="btn primary" type="submit">Cargar video</button>
         </form>
 
@@ -78,6 +78,7 @@
                 <option value="chords">Acordes / rasgueo</option>
               </select>
             </label>
+            <label>Instrumento <select id="instrument"></select></label>
             <label>Afinación <select id="tuning"></select></label>
             <label>Capo <input id="capo" type="number" min="0" max="12" step="1" value="0" inputmode="numeric" /></label>
             <label title="Limpia zumbidos, siseo y ruido de fondo antes de transcribir">Filtro de ruido
@@ -85,6 +86,13 @@
                 <option value="off" selected>Apagado</option>
                 <option value="normal">Suave</option>
                 <option value="strong">Fuerte</option>
+              </select>
+            </label>
+            <label title="Para canciones completas: quita la batería y, en grabaciones estéreo, lo que suena en el centro (voz, bajo, bombo). Las guitarras suelen ir a los lados.">Separar guitarra
+              <select id="separate">
+                <option value="off" selected>No (guitarra sola)</option>
+                <option value="drums">Quitar batería</option>
+                <option value="full">Canción completa</option>
               </select>
             </label>
             <label title="Más alto: detecta notas suaves (y también más errores). Más bajo: solo las notas claras.">Sensibilidad
@@ -112,6 +120,22 @@
             <label>Sintetizado <input id="volSynth" type="range" min="0" max="1" step="0.05" value="0" /></label>
           </div>
 
+          <div class="rhythm-bar" role="group" aria-label="Ritmo">
+            <label title="Pulsos por minuto (negras). Si la partitura sale el doble o la mitad de rápida, usa ÷2 o ×2.">Tempo
+              <input id="bpm" type="number" min="30" max="300" step="1" inputmode="numeric" /> BPM</label>
+            <button id="bpmHalf" class="btn small" type="button" title="La mitad de rápido">÷2</button>
+            <button id="bpmDouble" class="btn small" type="button" title="El doble de rápido">×2</button>
+            <button id="tap" class="btn small" type="button" title="Pulsa al ritmo de la canción (o la tecla T) para fijar el tempo">Marcar pulso</button>
+            <label>Compás
+              <select id="meter">
+                <option value="4/4">4/4</option><option value="3/4">3/4</option><option value="2/4">2/4</option><option value="6/8">6/8</option>
+              </select>
+            </label>
+            <label>Tonalidad <select id="keySel"></select></label>
+            <button id="rhythmAuto" class="btn small" type="button" title="Volver a detectar tempo, compás y tonalidad">Auto</button>
+            <span id="rhythmInfo" class="hint"></span>
+          </div>
+
           <div class="chord-panel">
             <div class="chord-now">
               <div id="chordDiagram" class="chord-diagram" aria-hidden="true"></div>
@@ -130,11 +154,49 @@
             <span id="loopInfo" class="loop-info" aria-live="polite"></span>
           </div>
           <canvas id="fretboard" role="img" aria-label="Diapasón con las notas que suenan"></canvas>
+          <div class="view-switch">
+            <div class="seg-group" role="group" aria-label="Vista">
+              <button class="seg on" type="button" data-sheet="quick" aria-pressed="true">Tab rápida</button>
+              <button class="seg" type="button" data-sheet="scoretab" aria-pressed="false">Partitura + tab</button>
+              <button class="seg" type="button" data-sheet="score" aria-pressed="false">Partitura</button>
+              <button class="seg" type="button" data-sheet="tab" aria-pressed="false">Tab con ritmo</button>
+            </div>
+            <div class="row">
+              <button id="undo" class="btn small" type="button" title="Deshacer (Ctrl+Z)" disabled>↶ Deshacer</button>
+              <button id="redo" class="btn small" type="button" title="Rehacer (Ctrl+Y)" disabled>↷ Rehacer</button>
+              <label class="edit-toggle" title="Corrige notas, trastes y duraciones"><input id="editMode" type="checkbox" /> ✏️ Editar</label>
+            </div>
+          </div>
           <div id="tab" class="tab" role="list" aria-label="Tablatura: pulsa una columna para saltar a ella"></div>
+          <div id="sheet" class="sheet" hidden aria-label="Partitura: pulsa una nota para ir a ella"><p id="sheetMsg" class="hint">Cargando partitura…</p></div>
+
+          <div id="editor" class="editor" hidden>
+            <div class="editor-head"><strong>Editar</strong> <span id="edInfo" class="hint">Elige una nota en la tab o la partitura</span></div>
+            <div id="edFrets" class="ed-frets" role="group" aria-label="Traste en cada cuerda (vacío = no suena)"></div>
+            <div class="row">
+              <label>Duración
+                <select id="edDur">
+                  <option value="16">𝅝 Redonda</option><option value="12">𝅗𝅥. Blanca con puntillo</option><option value="8">𝅗𝅥 Blanca</option>
+                  <option value="6">♩. Negra con puntillo</option><option value="4">♩ Negra</option><option value="3">♪. Corchea con puntillo</option>
+                  <option value="2">♪ Corchea</option><option value="1">𝅘𝅥𝅯 Semicorchea</option>
+                </select>
+              </label>
+              <button id="edLeft" class="btn small" type="button" title="Mover una semicorchea antes">◀ Antes</button>
+              <button id="edRight" class="btn small" type="button" title="Mover una semicorchea después">Después ▶</button>
+              <button id="edHear" class="btn small" type="button" title="Oír la nota (tecla H)">🔊 Oír</button>
+              <button id="edAdd" class="btn small" type="button" title="Añadir una nota después de esta (tecla Insert)">＋ Nota después</button>
+              <button id="edDel" class="btn small" type="button" title="Borrar (tecla Supr)">🗑 Borrar</button>
+            </div>
+            <p class="hint">Escribe el traste en cada cuerda (vacío = no suena). ← → eligen otra nota.</p>
+          </div>
 
           <div class="row exports">
-            <button id="expTxt" class="btn small">Descargar tab (.txt)</button>
-            <button id="expMid" class="btn small">Descargar MIDI</button>
+            <button id="expTxt" class="btn small">Tab (.txt)</button>
+            <button id="expMid" class="btn small" title="Tiempos exactos de la grabación">MIDI</button>
+            <button id="expXml" class="btn small">MusicXML</button>
+            <button id="expGp" class="btn small">Guitar Pro (.gp)</button>
+            <button id="expPdf" class="btn small">PDF / imprimir</button>
+            <button id="expMidQ" class="btn small" title="Notas ajustadas al compás, con tempo: ideal para un DAW">MIDI cuantizado</button>
             <button id="expJson" class="btn small">Descargar proyecto (.json)</button>
             <button id="impBtn" class="btn small" type="button">Abrir proyecto</button>
             <input id="impJson" type="file" accept=".json,application/json" hidden />

@@ -27,13 +27,14 @@ export const LOCAL_PRO_DOWNLOAD = 'https://github.com/7DCL/GuitarrIA/releases/do
 export interface LocalInfo {
   ok: boolean;
   separate: boolean; // versión Pro: puede aislar la guitarra
+  version: number; // Instagram y TikTok necesitan la 4
 }
 
 export async function localInfo(): Promise<LocalInfo | null> {
   try {
     const res = await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(1200) });
     const data = res.ok ? await res.json() : null;
-    return data?.ok === true ? { ok: true, separate: data.separate === true } : null;
+    return data?.ok === true ? { ok: true, separate: data.separate === true, version: Number(data.version) || 1 } : null;
   } catch {
     return null;
   }
@@ -50,15 +51,43 @@ export async function separateWithLocal(blob: Blob, signal?: AbortSignal): Promi
   return res.blob();
 }
 
+/** Versión de GuitarrIA Local abierto en el PC (0 si no responde). Instagram y TikTok necesitan la 4. */
+export async function localVersion(): Promise<number> {
+  return (await localInfo())?.version ?? 0;
+}
+
+export type Site = 'yt' | 'ig' | 'tt';
+
+/** Enlace de Instagram (reel/publicación) o TikTok → sitio e id. Solo el id viaja a GuitarrIA Local. */
+export function parseSocialLink(input: string): { site: 'ig' | 'tt'; id: string } | null {
+  try {
+    const s = input.trim();
+    const url = new URL(s.startsWith('http') ? s : `https://${s}`);
+    const host = url.hostname.replace(/^(www|m)\./, '');
+    if (host === 'instagram.com') {
+      const m = url.pathname.match(/^\/(?:[\w.]+\/)?(?:reels?|p|tv)\/([\w-]{5,40})/);
+      return m ? { site: 'ig', id: m[1] } : null;
+    }
+    if (host === 'tiktok.com') {
+      const m = url.pathname.match(/\/(?:video|v|embed(?:\/v2)?)\/(\d{8,25})/);
+      return m ? { site: 'tt', id: m[1] } : null;
+    }
+  } catch {
+    /* no es una URL */
+  }
+  return null;
+}
+
 /** Baja el audio del video. `onProgress` recibe 0..1 cuando el tamaño es conocido, o -1 mientras YouTube responde. */
 export async function downloadWithLocal(
   videoId: string,
   onProgress?: (fraction: number) => void,
   signal?: AbortSignal,
   isolate = false,
+  site: Site = 'yt',
 ): Promise<{ blob: Blob; title: string }> {
   onProgress?.(-1);
-  const res = await fetch(`${BASE}/audio?id=${encodeURIComponent(videoId)}${isolate ? '&stem=guitar' : ''}`, { signal });
+  const res = await fetch(`${BASE}/audio?id=${encodeURIComponent(videoId)}${isolate ? '&stem=guitar' : ''}${site === 'yt' ? '' : `&site=${site}`}`, { signal });
   if (!res.ok) {
     const msg = (await res.json().catch(() => null))?.error ?? `Error ${res.status}`;
     throw new Error(/confirm you.re not a bot|Sign in/i.test(msg) ? 'YouTube pidió verificación. Prueba de nuevo en unos minutos.' : msg);

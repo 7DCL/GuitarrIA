@@ -11,7 +11,9 @@ node scripts/e2e.cjs "${E2E_OUT:-e2e-out}"
 if [ -z "${SKIP_EVAL:-}" ]; then
   echo "== Precisión (audios de prueba con notas y acordes conocidos) =="
   [ -f eval/data/cases.json ] || python3 eval/make_data.py
-  CONFIGS='[{"label":"actual","noise":"off","autoTune":true,"mode":"lead","sensitivity":0.4},{"label":"actual+ruido","noise":"normal","autoTune":true,"mode":"lead","sensitivity":0.4}]' \
-    MIN_F1="${MIN_F1:-0.88}" MIN_CHORDS="${MIN_CHORDS:-0.75}" node scripts/eval.cjs
+  # Umbrales: notas (F1), acordes, ritmo (tempo y semicorchea correcta) y canción completa separando la guitarra.
+  CONFIGS='[{"label":"actual","noise":"off","autoTune":true,"mode":"lead","sensitivity":0.4},{"label":"actual+ruido","noise":"normal","autoTune":true,"mode":"lead","sensitivity":0.4},{"label":"separar","noise":"off","autoTune":true,"mode":"lead","sensitivity":0.4,"separate":"full","only":"banda_"}]' \
+    MIN_F1="${MIN_F1:-0.88}" MIN_CHORDS="${MIN_CHORDS:-0.75}" MIN_TEMPO="${MIN_TEMPO:-0.8}" MIN_GRID="${MIN_GRID:-0.75}" MIN_BAND="${MIN_BAND:-0.8}" \
+    node scripts/eval.cjs
 fi
 echo "QA OK"

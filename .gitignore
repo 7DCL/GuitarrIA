@@ -6,4 +6,5 @@ public/model
 eval/data
 .venv-local
 e2e-out
+public/alphatab
 eval/data-gs
