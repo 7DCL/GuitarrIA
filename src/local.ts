@@ -22,19 +22,38 @@ export function setLocalOptIn(on: boolean): void {
   }
 }
 
-export async function localAvailable(): Promise<boolean> {
-  return (await localVersion()) > 0;
+export const LOCAL_PRO_DOWNLOAD = 'https://github.com/7DCL/GuitarrIA/releases/download/local/GuitarrIA-Local-Pro.zip';
+
+export interface LocalInfo {
+  ok: boolean;
+  separate: boolean; // versión Pro: puede aislar la guitarra
+  version: number; // Instagram y TikTok necesitan la 4
 }
 
-/** Versión de GuitarrIA Local abierto en el PC (0 si no responde). Instagram y TikTok necesitan la 3. */
-export async function localVersion(): Promise<number> {
+export async function localInfo(): Promise<LocalInfo | null> {
   try {
     const res = await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(1200) });
     const data = res.ok ? await res.json() : null;
-    return data?.ok === true ? Number(data.version) || 1 : 0;
+    return data?.ok === true ? { ok: true, separate: data.separate === true, version: Number(data.version) || 1 } : null;
   } catch {
-    return 0;
+    return null;
   }
+}
+
+export async function localAvailable(): Promise<boolean> {
+  return (await localInfo()) !== null;
+}
+
+/** Manda un audio a GuitarrIA Local Pro y devuelve solo la guitarra (wav). */
+export async function separateWithLocal(blob: Blob, signal?: AbortSignal): Promise<Blob> {
+  const res = await fetch(`${BASE}/separate`, { method: 'POST', body: blob, headers: { 'Content-Type': 'application/octet-stream' }, signal });
+  if (!res.ok) throw new Error((await res.json().catch(() => null))?.error ?? `Error ${res.status}`);
+  return res.blob();
+}
+
+/** Versión de GuitarrIA Local abierto en el PC (0 si no responde). Instagram y TikTok necesitan la 4. */
+export async function localVersion(): Promise<number> {
+  return (await localInfo())?.version ?? 0;
 }
 
 export type Site = 'yt' | 'ig' | 'tt';
@@ -64,10 +83,11 @@ export async function downloadWithLocal(
   videoId: string,
   onProgress?: (fraction: number) => void,
   signal?: AbortSignal,
+  isolate = false,
   site: Site = 'yt',
 ): Promise<{ blob: Blob; title: string }> {
   onProgress?.(-1);
-  const res = await fetch(`${BASE}/audio?id=${encodeURIComponent(videoId)}${site === 'yt' ? '' : `&site=${site}`}`, { signal });
+  const res = await fetch(`${BASE}/audio?id=${encodeURIComponent(videoId)}${isolate ? '&stem=guitar' : ''}${site === 'yt' ? '' : `&site=${site}`}`, { signal });
   if (!res.ok) {
     const msg = (await res.json().catch(() => null))?.error ?? `Error ${res.status}`;
     throw new Error(/confirm you.re not a bot|Sign in/i.test(msg) ? 'YouTube pidió verificación. Prueba de nuevo en unos minutos.' : msg);

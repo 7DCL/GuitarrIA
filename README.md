@@ -46,14 +46,20 @@ Dos formas, las dos gratis:
    conexión, y la tab sale en segundos sin reproducir el video. Solo escucha en `127.0.0.1` y solo atiende a
    la web de GuitarrIA. Windows puede avisar de «aplicación no reconocida» (no está firmada):
    *Más información → Ejecutar de todas formas*. En Mac/Linux: `./scripts/local.sh`.
+   **Versión Pro** ([GuitarrIA-Local-Pro.zip](https://github.com/7DCL/GuitarrIA/releases/download/local/GuitarrIA-Local-Pro.zip),
+   ~400 MB): además **aísla la guitarra** del resto de la banda con Demucs antes de transcribir (tarda 1-3 min
+   más por tema, todo en tu PC). También sirve para archivos subidos. Descomprime y abre `GuitarrIA-Local-Pro.exe`.
 2. **Sin instalar nada.** El video se incrusta y GuitarrIA graba el audio de la pestaña mientras suena
    (Chrome/Edge de escritorio; elige *Esta pestaña* y *Compartir audio*).
 
-## Precisión
-`python3 eval/make_data.py && node scripts/eval.cjs` genera audios con notas conocidas (punteo limpio,
-con banda, con ruido y desafinado) y mide el acierto (F1), los acordes y el **ritmo** (tempo, compás,
-primer tiempo y semicorchea correcta de cada nota). Los casos `banda_*` (canción completa en estéreo)
-miden cuánto ayuda «Separar guitarra». Úsalo antes de tocar la transcripción.
+## Precisión y QA
+- `./scripts/qa.sh`: tests, build, pruebas en navegador (`scripts/e2e.cjs`) y precisión con umbrales. CI la
+  corre en cada push y no publica si falla.
+- `python3 eval/make_data.py && node scripts/eval.cjs`: audios sintéticos con notas y acordes conocidos.
+- Workflow *Precisión real (GuitarSet)*: mide con grabaciones reales de guitarra anotadas a mano
+  ([GuitarSet](https://zenodo.org/records/3371780)) y cuánto mejora aislar la guitarra.
+- Los casos de ritmo (`ritmo_*`) miden tempo, compás, primer tiempo y semicorchea correcta de cada nota;
+  `banda_*` (canción completa en estéreo) mide cuánto ayuda «Separar guitarra» en el navegador.
 
 ## Publicación gratis
 Cada push a `main` publica en GitHub Pages (`.github/workflows/deploy.yml`). Activa una vez:
@@ -66,7 +72,11 @@ Cada push a `main` publica en GitHub Pages (`.github/workflows/deploy.yml`). Act
 | `src/fingering.ts` | Notas → cuerda/traste (Viterbi) |
 | `src/tab.ts` | Tab ASCII |
 | `src/fretboard.ts` | Diapasón en canvas |
-| `src/theory.ts` | Notas, afinaciones, acordes |
+| `src/theory.ts` | Notas, afinaciones, notación |
+| `src/chords.ts` | Acordes: cromagrama, tonalidad, pulso y Viterbi |
+| `src/voicing.ts` | Diagramas de acordes |
+| `src/tuner.ts` | Afinador (YIN) |
+| `local/` | GuitarrIA Local (YouTube) y separación de la guitarra (Pro) |
 | `src/pitch.ts` | Detector de tono (afinador) |
 | `src/player.ts` | Reproductor de archivo / YouTube y captura de pestaña |
 | `src/rhythm.ts` | Pulso, tempo, compás, tonalidad y cuantización |

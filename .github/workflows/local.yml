@@ -6,6 +6,8 @@ on:
   push:
     branches: [main]
     paths: ['local/**', '.github/workflows/local.yml']
+  pull_request:
+    paths: ['local/**', '.github/workflows/local.yml']
   # Cada lunes: rehace el .exe con el yt-dlp más reciente (YouTube cambia a menudo).
   schedule:
     - cron: '0 6 * * 1'
@@ -40,6 +42,7 @@ jobs:
         continue-on-error: true
         run: python -c "import sys; sys.path.insert(0, 'local'); import guitarria_local as g; p, t = g.download('jNQXAC9IVRw'); print('OK', t, p.suffix, p.stat().st_size)"
       - name: Publicar
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -47,3 +50,45 @@ jobs:
           # Reemplaza el .exe sin borrar la release (el enlace de descarga nunca se rompe).
           gh release upload local dist/GuitarrIA-Local.exe --clobber \
             || gh release create local dist/GuitarrIA-Local.exe --title "GuitarrIA Local" --notes "$NOTES"
+
+  # Versión Pro: además separa la guitarra con Demucs (torch en CPU). Pesa más, por eso va aparte.
+  windows-pro:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install --upgrade -r local/requirements-pro.txt "pyinstaller==6.*"
+      - name: Localizar deno y bajar el modelo de separación
+        run: |
+          echo "DENO=$(python -c 'import deno; print(deno.find_deno_bin())')" >> "$GITHUB_ENV"
+          TORCH_HOME="$PWD/modelo" python -c "from demucs.pretrained import get_model; get_model('htdemucs_6s')"
+          du -sh modelo
+      - name: Empaquetar
+        run: >
+          pyinstaller --onedir --console --name GuitarrIA-Local-Pro
+          --add-binary "$DENO;."
+          --add-data "modelo/hub;hub"
+          --collect-all yt_dlp_ejs
+          --collect-all demucs
+          --collect-all imageio_ffmpeg
+          --paths local
+          local/guitarria_local.py
+      - name: Probar que separa (sin internet para el modelo)
+        run: GUITARRIA_SELFTEST=pro ./dist/GuitarrIA-Local-Pro/GuitarrIA-Local-Pro.exe
+      - name: Comprimir
+        run: |
+          cd dist && 7z a -tzip -mx=7 ../GuitarrIA-Local-Pro.zip GuitarrIA-Local-Pro > /dev/null
+          ls -la ../GuitarrIA-Local-Pro.zip
+      - name: Publicar
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload local GuitarrIA-Local-Pro.zip --clobber \
+            || gh release create local GuitarrIA-Local-Pro.zip --title "GuitarrIA Local" --notes "GuitarrIA Local"

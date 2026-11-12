@@ -12,12 +12,13 @@ const CONFIGS = JSON.parse(process.env.CONFIGS || 'null') || [
 (async () => {
   const server = spawn('npx', ['vite', '--port', '5199', '--strictPort'], { stdio: 'ignore' });
   await new Promise((r) => setTimeout(r, 2500));
-  const browser = await chromium.launch();
+  // Sin GPU (CI): WebGL por software para que la IA corra igual que en un navegador normal.
+  const browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--ignore-gpu-blocklist'] });
   try {
     const page = await browser.newPage();
     page.on('pageerror', (e) => console.error('pageerror:', e.message));
-    await page.goto(`http://localhost:5199/eval/index.html?only=${process.env.ONLY || ''}&configs=${encodeURIComponent(JSON.stringify(CONFIGS))}`);
-    await page.waitForFunction(() => window.__result, null, { timeout: 1800000 });
+    await page.goto(`http://localhost:5199/eval/index.html?only=${process.env.ONLY || ''}&data=${process.env.DATA || 'data'}&configs=${encodeURIComponent(JSON.stringify(CONFIGS))}`);
+    await page.waitForFunction(() => window.__result, null, { timeout: Number(process.env.EVAL_TIMEOUT_MS || 1800000) });
     const rows = await page.evaluate(() => window.__result);
     if (rows.error) throw new Error(rows.error);
     require('node:fs').writeFileSync('eval/data/last-run.json', JSON.stringify(rows));

@@ -1,0 +1,92 @@
+# Mide la precisión con grabaciones reales de guitarra (GuitarSet). Se lanza a mano o cada semana.
+# El contenedor de desarrollo no puede bajar GuitarSet; GitHub sí.
+name: Precisión real (GuitarSet)
+
+on:
+  workflow_dispatch:
+    inputs:
+      configs:
+        description: 'CONFIGS para scripts/eval.cjs (JSON); vacío = configuración actual'
+        required: false
+        default: ''
+      players:
+        description: 'Guitarristas de GuitarSet (00..05, separados por coma)'
+        required: false
+        default: '00'
+      job:
+        description: 'Qué medir'
+        type: choice
+        options: [todo, guitarset, separacion]
+        default: todo
+      only:
+        description: 'Prefijo de casos (gs_ = todos)'
+        required: false
+        default: 'gs_'
+  schedule:
+    - cron: '0 7 * * 1'
+
+jobs:
+  guitarset:
+    if: inputs.job != 'separacion'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci && node scripts/copy-model.mjs
+      - run: npx playwright install --with-deps chromium
+      - uses: actions/cache@v4
+        with:
+          path: gs-zips
+          key: guitarset-v1
+      - name: Bajar GuitarSet (anotaciones + micrófono)
+        run: |
+          mkdir -p gs-zips
+          for f in annotation.zip audio_mono-mic.zip; do
+            [ -s "gs-zips/$f" ] || curl -sSfL --retry 3 -o "gs-zips/$f" "https://zenodo.org/records/3371780/files/$f?download=1"
+          done
+          ls -la gs-zips
+      - run: pip install soundfile numpy && python3 eval/guitarset.py gs-zips "${{ inputs.players || '00' }}"
+      - name: Evaluar
+        env:
+          DATA: data-gs
+          ONLY: ${{ inputs.only || 'gs_' }}
+          CONFIGS: ${{ inputs.configs || '[{"label":"actual","noise":"off","autoTune":true,"mode":"lead","sensitivity":0.4}]' }}
+          EVAL_TIMEOUT_MS: 6000000
+        run: node scripts/eval.cjs | tee resultado.txt
+      - run: |
+          { echo '```'; grep -vE '^ {3}' resultado.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: resultado-guitarset
+          path: resultado.txt
+
+  # ¿Cuánto mejora aislar la guitarra (GuitarrIA Local Pro) en el caso con banda?
+  separacion:
+    if: inputs.job != 'guitarset'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci && node scripts/copy-model.mjs
+      - run: npx playwright install --with-deps chromium
+      - run: pip install -r local/requirements-pro.txt
+      - run: python3 eval/make_data.py && python3 eval/separate_case.py punteo_con_banda acordes_rasgueo
+      - name: Evaluar
+        env:
+          CONFIGS: '[{"label":"actual","noise":"off","autoTune":true,"mode":"lead","sensitivity":0.4}]'
+        run: |
+          ONLY=punteo_con_banda node scripts/eval.cjs | tee -a separacion.txt
+          ONLY=acordes_rasgueo node scripts/eval.cjs | tee -a separacion.txt
+      - run: |
+          { echo '```'; grep -vE '^ {3}' separacion.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

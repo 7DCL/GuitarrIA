@@ -6,6 +6,7 @@ Solo escucha en 127.0.0.1 y solo responde a la web de GuitarrIA.
 
 Uso: python guitarria_local.py   (o el GuitarrIA-Local.exe ya empaquetado)
 """
+import hashlib
 import json
 import os
 import re
@@ -20,7 +21,14 @@ from urllib.parse import parse_qs, quote, urlparse
 
 import yt_dlp
 
-VERSION = "3"
+try:  # GuitarrIA Local Pro: separación de la guitarra con Demucs
+    import separate
+
+    SEPARATE = separate.available()
+except ImportError:
+    SEPARATE = False
+
+VERSION = "4"
 HOST, PORT = "127.0.0.1", 8765
 ALLOWED_ORIGINS = {"https://7dcl.github.io"}
 if os.environ.get("GUITARRIA_DEV"):
@@ -38,6 +46,8 @@ SITES = {
     "tt": (re.compile(r"^\d{8,25}$"), "https://www.tiktok.com/@/video/{}"),
 }
 _lock = threading.Lock()
+_sep_lock = threading.Lock()  # separar usa toda la CPU: de a uno
+MAX_UPLOAD = 300 * 1024 * 1024
 
 
 def bundled(name):
@@ -120,7 +130,19 @@ def download(vid, site="yt"):
         return hit, names[vid]
 
 
-MIME = {".m4a": "audio/mp4", ".mp4": "audio/mp4", ".webm": "audio/webm", ".opus": "audio/ogg"}
+MIME = {".m4a": "audio/mp4", ".mp4": "audio/mp4", ".webm": "audio/webm", ".opus": "audio/ogg", ".wav": "audio/wav"}
+
+
+def separated(src, key):
+    """Pista de guitarra aislada de `src` (en caché por `key`)."""
+    out = CACHE / f"{key}.guitar.wav"
+    with _sep_lock:
+        if not out.exists() or out.stat().st_size == 0:
+            print("Separando la guitarra (puede tardar 1-3 minutos)…")
+            start = time.time()
+            separate.guitar(src, out)
+            print(f"Guitarra separada en {time.time() - start:.0f} s")
+    return out
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -145,7 +167,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(204)
         self._cors()
-        self.send_header("Access-Control-Allow-Methods", "GET")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST")
         self.send_header("Access-Control-Allow-Headers", "*")
         self.end_headers()
 
@@ -154,35 +176,69 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(403, {"error": "Origen no permitido"})
         parsed = urlparse(self.path)
         if parsed.path == "/health":
-            return self._json(200, {"ok": True, "version": VERSION, "yt_dlp": yt_dlp.version.__version__})
+            return self._json(200, {"ok": True, "version": VERSION, "yt_dlp": yt_dlp.version.__version__, "separate": SEPARATE})
         if parsed.path == "/audio":
             query = parse_qs(parsed.query)
             vid = query.get("id", [""])[0]
             site = query.get("site", ["yt"])[0]
+            stem = query.get("stem", [""])[0]
             if site not in SITES or not SITES[site][0].match(vid):
                 return self._json(400, {"error": "Id de video no válido"})
             try:
                 print(f"Descargando: {site} {vid}")
                 start = time.time()
                 path, title = download(vid, site)
+                if stem == "guitar" and SEPARATE:
+                    path = separated(path, vid if site == "yt" else f"{site}-{vid}")
             except Exception as e:  # noqa: BLE001 — el mensaje se muestra al usuario en la web
                 print(f"Error: {e}")
                 return self._json(502, {"error": str(e).splitlines()[0][:300]})
-            data = path.read_bytes()
-            self.send_response(200)
-            self._cors()
-            self.send_header("Content-Type", MIME.get(path.suffix, "application/octet-stream"))
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("X-Title", quote(title))
-            self.end_headers()
-            try:
-                self.wfile.write(data)
-            except (BrokenPipeError, ConnectionResetError):
-                print("La web canceló la descarga.")
-                return None
-            print(f"Listo: {title} ({time.time() - start:.0f} s)")
+            if self._send_file(path, title):
+                print(f"Listo: {title} ({time.time() - start:.0f} s)")
             return None
         return self._json(404, {"error": "No encontrado"})
+
+    def do_POST(self):
+        """/separate: recibe un audio (archivo subido en la web) y devuelve solo la guitarra."""
+        if self.headers.get("Origin", "") not in ALLOWED_ORIGINS:
+            return self._json(403, {"error": "Origen no permitido"})
+        if urlparse(self.path).path != "/separate":
+            return self._json(404, {"error": "No encontrado"})
+        if not SEPARATE:
+            return self._json(501, {"error": "Esta versión de GuitarrIA Local no separa la guitarra (usa la versión Pro)"})
+        size = int(self.headers.get("Content-Length") or 0)
+        if not 0 < size <= MAX_UPLOAD:
+            return self._json(413, {"error": "Audio vacío o demasiado grande"})
+        data = self.rfile.read(size)
+        key = "upload-" + hashlib.sha1(data).hexdigest()[:16]
+        CACHE.mkdir(exist_ok=True)
+        src = CACHE / f"{key}.bin"
+        try:
+            src.write_bytes(data)
+            out = separated(src, key)
+        except Exception as e:  # noqa: BLE001
+            print(f"Error: {e}")
+            return self._json(502, {"error": "No se pudo separar la guitarra: " + str(e).splitlines()[0][:200]})
+        finally:
+            src.unlink(missing_ok=True)
+        prune()
+        self._send_file(out, "")
+        return None
+
+    def _send_file(self, path, title):
+        data = path.read_bytes()
+        self.send_response(200)
+        self._cors()
+        self.send_header("Content-Type", MIME.get(path.suffix, "application/octet-stream"))
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-Title", quote(title))
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+            return True
+        except (BrokenPipeError, ConnectionResetError):
+            print("La web canceló la descarga.")
+            return False
 
     def log_message(self, *args):
         pass
@@ -196,7 +252,9 @@ def main():
         input("Pulsa Enter para cerrar…")
         return
     print("=" * 56)
-    print("  GuitarrIA Local está funcionando.")
+    print(f"  GuitarrIA Local{' Pro' if SEPARATE else ''} está funcionando.")
+    if SEPARATE:
+        print("  Separación de guitarra: activada.")
     print("  Deja esta ventana abierta y usa https://7dcl.github.io/GuitarrIA/")
     print("  Para cerrarlo, cierra esta ventana.")
     print("=" * 56)
@@ -213,5 +271,17 @@ if __name__ == "__main__":
         # Usado por el build: comprueba que yt-dlp y deno van dentro del .exe.
         deno = ydl_options("x").get("js_runtimes", {}).get("deno", {}).get("path")
         print(json.dumps({"ok": bool(deno), "version": VERSION, "yt_dlp": yt_dlp.version.__version__, "deno": deno}))
-        sys.exit(0 if deno else 1)
+        if not deno:
+            sys.exit(1)
+        if os.environ["GUITARRIA_SELFTEST"] == "pro":
+            # La versión Pro tiene que separar de verdad (modelo incluido, sin descargas).
+            import numpy as np
+
+            CACHE.mkdir(exist_ok=True)
+            t = np.arange(separate.SR * 6) / separate.SR
+            separate.write_wav(CACHE / "selftest.wav", 0.3 * np.sin(2 * np.pi * 196 * t) * np.exp(-(t % 1) * 3))
+            secs = separate.guitar(CACHE / "selftest.wav", CACHE / "selftest.guitar.wav")
+            print(json.dumps({"separate": SEPARATE, "seconds": secs}))
+            sys.exit(0 if SEPARATE and secs > 5 else 1)
+        sys.exit(0)
     main()

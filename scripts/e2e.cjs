@@ -98,13 +98,21 @@ async function newPage(browser, opts = {}) {
   const page = await context.newPage();
   page.errors = [];
   page.on('pageerror', (e) => page.errors.push(e.message));
+  if (opts.init) await page.addInitScript(opts.init);
   page.on('console', (m) => m.type() === 'error' && !/favicon|ERR_|net::/.test(m.text()) && page.errors.push(m.text()));
   await context.route('https://www.youtube.com/iframe_api', (r) => r.fulfill({ contentType: 'text/javascript', body: FAKE_YT }));
   if (opts.local) {
     const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Expose-Headers': 'X-Title' };
     await context.route('http://127.0.0.1:8765/**', (r) => {
       const u = new globalThis.URL(r.request().url());
-      if (u.pathname === '/health') return r.fulfill({ headers: cors, contentType: 'application/json', body: '{"ok":true,"version":"2"}' });
+      if (u.pathname === '/health')
+        return r.fulfill({ headers: cors, contentType: 'application/json', body: JSON.stringify({ ok: true, version: '3', separate: opts.local === 'pro' }) });
+      if (r.request().method() === 'OPTIONS') return r.fulfill({ status: 204, headers: { ...cors, 'Access-Control-Allow-Methods': 'GET, POST', 'Access-Control-Allow-Headers': '*' } });
+      if (u.pathname === '/separate') {
+        page.separated = (page.separated || 0) + 1;
+        return r.fulfill({ headers: cors, contentType: 'audio/wav', body: melodyWav });
+      }
+      if (u.searchParams.get('stem') === 'guitar') page.stems = (page.stems || 0) + 1;
       assert(/^[\w-]{11}$/.test(u.searchParams.get('id') || ''), 'la web debe mandar solo el id del video');
       return r.fulfill({ headers: { ...cors, 'X-Title': encodeURIComponent('Canción: prueba/1') }, contentType: 'audio/wav', body: melodyWav });
     });
@@ -169,6 +177,15 @@ async function noErrors(page) {
       assert((await page.inputValue('#capo')) === '12', 'el capo no se limita a 12');
       await page.fill('#capo', '0');
       await page.dispatchEvent('#capo', 'change');
+      // Corregir el acorde actual (y todas sus apariciones) con el editor
+      const before = await page.textContent('#chord');
+      await page.click('#chordEdit');
+      await page.selectOption('#edRoot', '2');
+      await page.selectOption('#edQuality', 'm');
+      await page.click('#edApply');
+      await page.waitForTimeout(150);
+      assert((await page.textContent('#chord')) === 'Dm', `el acorde corregido no se muestra (antes ${before})`);
+      assert((await page.$$eval('.tab .ch', (c) => c.map((x) => x.textContent))).includes('Dm'), 'la tab no muestra el acorde corregido');
       // Notación latina
       await page.selectOption('#notation', 'latin');
       const names = await page.$$eval('.chord-chip', (c) => c.map((x) => x.dataset.name).join(' '));
@@ -364,6 +381,26 @@ async function noErrors(page) {
       assert(isYt, 'no se sincroniza con el video de YouTube');
       const name = await page.evaluate(() => window.__guitarria.state.name);
       assert(!/[/:]/.test(name), `nombre de archivo inseguro: ${name}`);
+      await noErrors(page);
+      await page.close();
+    });
+
+    await check('GuitarrIA Local Pro: aísla la guitarra en videos y archivos subidos', async () => {
+      const page = await newPage(browser, { local: 'pro', init: () => localStorage.setItem('guitarria.local', '1') });
+      await page.waitForSelector('#isolateRow:not([hidden])', { timeout: 5000 });
+      assert(!(await page.isChecked('#isolate')), 'aislar la guitarra (experimental) debería venir apagado');
+      await page.check('#isolate');
+      await page.fill('#ytUrl', 'https://youtu.be/dQw4w9WgXcQ');
+      await page.click('#ytLoad');
+      await page.waitForSelector('#workspace:not([hidden])', { timeout: 180000 });
+      assert(page.stems === 1, 'el video no se pidió con la guitarra aislada');
+      assert((await page.evaluate(() => !!window.__guitarria.state.chordPrepared)), 'los acordes no salen del audio completo');
+      const file = path.join(os.tmpdir(), 'guitarria-tema.wav');
+      fs.writeFileSync(file, melodyWav);
+      await page.setInputFiles('#file', file);
+      await page.waitForFunction(() => window.__guitarria.state.name === 'guitarria-tema', null, { timeout: 180000 });
+      await page.waitForSelector('#progressRow[hidden]', { state: 'attached', timeout: 180000 });
+      assert(page.separated === 1, 'el archivo no se mandó a separar');
       await noErrors(page);
       await page.close();
     });
